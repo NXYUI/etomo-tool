@@ -59,4 +59,4 @@ Windows 설치 파일은 프로젝트 관리자가 별도로 제공하는 배포
 
 ## Support Email
 
-last2022:kakao.com
+last2022@kakao.com
