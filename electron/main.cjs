@@ -4,9 +4,10 @@ const path = require('node:path')
 const AdmZip = require('adm-zip')
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
-const PROJECT_FILE_NAME = 'babechat.project.json'
-const BACKUP_FORMAT = 'babechat-backup'
+const PROJECT_FILE_NAME = 'etomo.project.json'
+const BACKUP_FORMAT = 'etomo-backup'
 const BACKUP_FORMAT_VERSION = 1
+const projectSaveQueues = new Map()
 
 function normalizeProjectPath(projectPath) {
   if (typeof projectPath !== 'string' || projectPath.trim() === '') {
@@ -182,6 +183,25 @@ async function ensureDirectoryIsEmpty(directoryPath) {
   }
 }
 
+function getProjectQueueKey(projectPath) {
+  return process.platform === 'win32' ? projectPath.toLowerCase() : projectPath
+}
+
+function enqueueProjectSave(projectPath, task) {
+  const queueKey = getProjectQueueKey(projectPath)
+  const previousTask = projectSaveQueues.get(queueKey) || Promise.resolve()
+  const currentTask = previousTask.catch(() => undefined).then(task)
+
+  projectSaveQueues.set(queueKey, currentTask)
+  currentTask.finally(() => {
+    if (projectSaveQueues.get(queueKey) === currentTask) {
+      projectSaveQueues.delete(queueKey)
+    }
+  })
+
+  return currentTask
+}
+
 function createUniqueFolderName(name, usedNames) {
   const baseName = sanitizeSegment(name || 'project')
   let folderName = baseName
@@ -312,12 +332,14 @@ async function listCharacterFolders(projectPath) {
 }
 
 function createMainWindow() {
+  const iconPath = path.join(__dirname, '..', devServerUrl ? 'public' : 'dist', 'icon.ico')
   const mainWindow = new BrowserWindow({
     width: 1420,
     height: 920,
     minWidth: 1100,
     minHeight: 720,
-    title: 'BabeChat',
+    title: 'etomo-tool',
+    icon: iconPath,
     backgroundColor: '#f6f7f8',
     autoHideMenuBar: true,
     webPreferences: {
@@ -364,27 +386,42 @@ ipcMain.handle('project:select-folder', async () => {
 
 ipcMain.handle('project:save-state', async (_event, payload) => {
   const projectPath = normalizeProjectPath(payload.projectPath)
-  const projectFilePath = path.join(projectPath, PROJECT_FILE_NAME)
-  const tempProjectFilePath = path.join(
-    projectPath,
-    `${PROJECT_FILE_NAME}.${process.pid}.tmp`,
-  )
 
-  await fs.mkdir(projectPath, { recursive: true })
-  await fs.writeFile(tempProjectFilePath, JSON.stringify(payload.state, null, 2), 'utf8')
-  await fs.rename(tempProjectFilePath, projectFilePath)
+  return enqueueProjectSave(projectPath, async () => {
+    const projectFilePath = path.join(projectPath, PROJECT_FILE_NAME)
+    const tempProjectFilePath = path.join(
+      projectPath,
+      `${PROJECT_FILE_NAME}.${process.pid}.${Date.now()}.${Math.random()
+        .toString(36)
+        .slice(2)}.tmp`,
+    )
 
-  return { ok: true, filePath: projectFilePath }
+    try {
+      await fs.mkdir(projectPath, { recursive: true })
+      await fs.writeFile(tempProjectFilePath, JSON.stringify(payload.state, null, 2), 'utf8')
+      await fs.rename(tempProjectFilePath, projectFilePath)
+
+      return { ok: true, filePath: projectFilePath }
+    } catch (error) {
+      try {
+        await fs.unlink(tempProjectFilePath)
+      } catch {
+        // The temp file may not exist if the write failed before creation.
+      }
+
+      throw error
+    }
+  })
 })
 
 ipcMain.handle('backup:export-project', async (_event, payload) => {
   const projectPath = normalizeProjectPath(payload.projectPath)
   const projectName = sanitizeSegment(payload.projectName || path.basename(projectPath))
   const result = await dialog.showSaveDialog({
-    title: 'BabeChat 백업 저장',
-    defaultPath: `${projectName}_${timestampForFileName()}.babechat`,
+    title: 'etomo-tool 백업 저장',
+    defaultPath: `${projectName}_${timestampForFileName()}.etomo`,
     filters: [
-      { name: 'BabeChat Backup', extensions: ['babechat'] },
+      { name: 'etomo-tool Backup', extensions: ['etomo'] },
       { name: 'ZIP Archive', extensions: ['zip'] },
     ],
   })
@@ -444,10 +481,10 @@ ipcMain.handle('backup:export-workspace', async (_event, payload) => {
   }
 
   const result = await dialog.showSaveDialog({
-    title: 'BabeChat 전체 백업 저장',
-    defaultPath: `BabeChat_Workspace_${timestampForFileName()}.babechat`,
+    title: 'etomo-tool 전체 백업 저장',
+    defaultPath: `etomo-tool_Workspace_${timestampForFileName()}.etomo`,
     filters: [
-      { name: 'BabeChat Backup', extensions: ['babechat'] },
+      { name: 'etomo-tool Backup', extensions: ['etomo'] },
       { name: 'ZIP Archive', extensions: ['zip'] },
     ],
   })
@@ -501,10 +538,10 @@ ipcMain.handle('backup:export-workspace', async (_event, payload) => {
 
 ipcMain.handle('backup:import-project', async () => {
   const backupResult = await dialog.showOpenDialog({
-    title: 'BabeChat 백업 선택',
+    title: 'etomo-tool 백업 선택',
     properties: ['openFile'],
     filters: [
-      { name: 'BabeChat Backup', extensions: ['babechat'] },
+      { name: 'etomo-tool Backup', extensions: ['etomo'] },
       { name: 'ZIP Archive', extensions: ['zip'] },
     ],
   })
@@ -518,7 +555,7 @@ ipcMain.handle('backup:import-project', async () => {
   const manifest = parseJsonEntry(zip, 'backup.json')
 
   if (manifest.format !== BACKUP_FORMAT || manifest.formatVersion !== BACKUP_FORMAT_VERSION) {
-    throw new Error('Unsupported BabeChat backup format.')
+    throw new Error('Unsupported etomo-tool backup format.')
   }
 
   const backupProjects = Array.isArray(manifest.projects)
