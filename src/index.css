@@ -913,6 +913,11 @@ button:focus-visible,
   grid-template-rows: auto auto minmax(0, 1fr);
 }
 
+.guidelines-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .tool-panel-header {
   display: flex;
   gap: 12px;
@@ -1058,6 +1063,8 @@ button:focus-visible,
 }
 
 .code-input::-webkit-scrollbar,
+.guidelines-document::-webkit-scrollbar,
+.guidelines-summary::-webkit-scrollbar,
 .profile-table-wrap::-webkit-scrollbar,
 .character-code-list::-webkit-scrollbar,
 .slot-grid::-webkit-scrollbar {
@@ -1066,6 +1073,8 @@ button:focus-visible,
 }
 
 .code-input::-webkit-scrollbar-track,
+.guidelines-document::-webkit-scrollbar-track,
+.guidelines-summary::-webkit-scrollbar-track,
 .profile-table-wrap::-webkit-scrollbar-track,
 .character-code-list::-webkit-scrollbar-track,
 .slot-grid::-webkit-scrollbar-track {
@@ -1073,6 +1082,8 @@ button:focus-visible,
 }
 
 .code-input::-webkit-scrollbar-thumb,
+.guidelines-document::-webkit-scrollbar-thumb,
+.guidelines-summary::-webkit-scrollbar-thumb,
 .profile-table-wrap::-webkit-scrollbar-thumb,
 .character-code-list::-webkit-scrollbar-thumb,
 .slot-grid::-webkit-scrollbar-thumb {
@@ -1082,6 +1093,8 @@ button:focus-visible,
 }
 
 .code-input::-webkit-scrollbar-thumb:hover,
+.guidelines-document::-webkit-scrollbar-thumb:hover,
+.guidelines-summary::-webkit-scrollbar-thumb:hover,
 .profile-table-wrap::-webkit-scrollbar-thumb:hover,
 .character-code-list::-webkit-scrollbar-thumb:hover,
 .slot-grid::-webkit-scrollbar-thumb:hover {
@@ -1089,10 +1102,116 @@ button:focus-visible,
 }
 
 .code-input::-webkit-scrollbar-corner,
+.guidelines-document::-webkit-scrollbar-corner,
+.guidelines-summary::-webkit-scrollbar-corner,
 .profile-table-wrap::-webkit-scrollbar-corner,
 .character-code-list::-webkit-scrollbar-corner,
 .slot-grid::-webkit-scrollbar-corner {
   background: #0b0e0d;
+}
+
+.guidelines-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(15rem, 23%);
+  gap: 0.75rem;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.guidelines-document {
+  display: grid;
+  align-content: start;
+  gap: 0.65rem;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 0.35rem;
+  scrollbar-color: rgba(45, 212, 191, 0.45) #0b0e0d;
+  scrollbar-width: thin;
+}
+
+.guideline-card,
+.guidelines-summary,
+.guidelines-stat-list div {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-raised);
+}
+
+.guideline-card {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.8rem;
+}
+
+.guideline-card h3,
+.guidelines-summary strong {
+  margin: 0;
+  color: var(--accent-strong);
+  font-size: 0.9rem;
+  line-height: 1.25;
+}
+
+.guideline-card ol,
+.guidelines-summary ol {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.guideline-card li,
+.guidelines-summary li {
+  color: var(--text);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+.guidelines-side-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.65rem;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.guidelines-stat-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.guidelines-stat-list div {
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.55rem;
+}
+
+.guidelines-stat-list span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.guidelines-stat-list strong {
+  overflow: hidden;
+  font-size: 1rem;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.guidelines-summary {
+  display: grid;
+  align-content: start;
+  gap: 0.55rem;
+  overflow: auto;
+  padding: 0.7rem;
+  scrollbar-color: rgba(45, 212, 191, 0.45) #0b0e0d;
+  scrollbar-width: thin;
 }
 
 .image-tool-layout {
@@ -2971,6 +3090,7 @@ kbd {
   }
 
   .image-tool-layout,
+  .guidelines-workspace,
   .editor-grid,
   .prompt-editor-body,
   .cork-board,
@@ -2990,6 +3110,10 @@ kbd {
 
   .completion-side-panel.folded {
     min-height: 2.6rem;
+  }
+
+  .guidelines-workspace {
+    grid-template-rows: minmax(0, 1fr) minmax(9rem, 32%);
   }
 
   .completion-fold-tab {
