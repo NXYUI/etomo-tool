@@ -172,7 +172,7 @@ interface AppErrorBoundaryState {
 }
 
 const STORAGE_KEY = 'babechat.localProjectState'
-const PROJECT_VERSION = 15
+const PROJECT_VERSION = 16
 const PROMPT_FONT_DEFAULT_SIZE = 14
 const PROMPT_FONT_MIN_SIZE = 11
 const PROMPT_FONT_MAX_SIZE = 24
@@ -548,6 +548,21 @@ function createInitialSnapshot(): LocalSnapshot {
   }
 }
 
+function getPersistedChatbot(chatbot: ChatbotState): ChatbotState {
+  return {
+    ...chatbot,
+    markdownEnabled: false,
+  }
+}
+
+function createProjectPayload(chatbot: ChatbotState): ProjectPayload {
+  return {
+    version: PROJECT_VERSION,
+    updatedAt: new Date().toISOString(),
+    chatbot: getPersistedChatbot(chatbot),
+  }
+}
+
 function normalizeTokenProvider(value: unknown): TokenProvider {
   return value === 'gemini' ? 'gemini' : 'claude'
 }
@@ -837,8 +852,7 @@ function normalizeChatbot(input: ChatbotInput, fallbackTitle = '새 챗봇'): Ch
     promptTabs: normalizedPromptState.promptTabs,
     tokenProvider: normalizeTokenProvider(input.tokenProvider),
     tokenLimit: typeof input.tokenLimit === 'number' ? input.tokenLimit : 4000,
-    markdownEnabled:
-      typeof input.markdownEnabled === 'boolean' ? input.markdownEnabled : false,
+    markdownEnabled: false,
     promptFontSize: normalizePromptFontSize(input.promptFontSize),
     imageCardSize: normalizeImageCardSize(input.imageCardSize),
     completionsFolded:
@@ -1299,11 +1313,7 @@ function BabeChatApp() {
   }, [activeProjectId, chatbot.imageCardSize])
 
   const projectState = useMemo<ProjectPayload>(
-    () => ({
-      version: PROJECT_VERSION,
-      updatedAt: new Date().toISOString(),
-      chatbot,
-    }),
+    () => createProjectPayload(chatbot),
     [chatbot],
   )
   const activeCharacter =
@@ -1355,7 +1365,10 @@ function BabeChatApp() {
         activeProjectId,
         activeTool,
         projectsFolded,
-        projects,
+        projects: projects.map((project) => ({
+          ...project,
+          chatbot: getPersistedChatbot(project.chatbot),
+        })),
         globalProfilePresets,
       }),
     )
@@ -2028,6 +2041,203 @@ function BabeChatApp() {
       const nextProject =
         remainingProjects[Math.max(0, closedProjectIndex - 1)] ?? remainingProjects[0]
       setActiveProjectId(nextProject.id)
+    }
+  }
+
+  async function handleExportProjectBackup() {
+    if (!projectPath) {
+      setStatus({
+        kind: 'error',
+        message: '백업하려면 먼저 프로젝트 폴더를 지정해야 합니다.',
+      })
+      return
+    }
+
+    if (!window.electronAPI?.exportProjectBackup || !window.electronAPI.saveProjectState) {
+      setStatus({
+        kind: 'error',
+        message: '백업 저장은 Electron 앱에서 사용할 수 있습니다.',
+      })
+      return
+    }
+
+    try {
+      setAutoSaveStatus('saving')
+      await window.electronAPI.saveProjectState(projectPath, projectState)
+      setAutoSaveStatus('saved')
+
+      const result = await window.electronAPI.exportProjectBackup({
+        projectId: activeProject.id,
+        projectPath,
+        projectName: getProjectDisplayName(activeProject),
+        state: projectState,
+        globalProfilePresets,
+      })
+
+      if (result.canceled) {
+        return
+      }
+
+      setStatus({
+        kind: 'success',
+        message: `백업을 저장했습니다. 포함 파일 ${result.fileCount ?? 0}개`,
+      })
+    } catch {
+      setAutoSaveStatus('error')
+      setStatus({
+        kind: 'error',
+        message: '백업 저장에 실패했습니다.',
+      })
+    }
+  }
+
+  async function handleExportWorkspaceBackup() {
+    if (!window.electronAPI?.exportWorkspaceBackup) {
+      setStatus({
+        kind: 'error',
+        message: '전체 백업 저장은 Electron 앱에서 사용할 수 있습니다.',
+      })
+      return
+    }
+
+    try {
+      setAutoSaveStatus('saving')
+
+      if (window.electronAPI.saveProjectState) {
+        await Promise.all(
+          projects
+            .filter((project) => Boolean(project.projectPath))
+            .map((project) =>
+              window.electronAPI?.saveProjectState(
+                project.projectPath,
+                createProjectPayload(project.chatbot),
+              ),
+            ),
+        )
+      }
+
+      setAutoSaveStatus('saved')
+
+      const result = await window.electronAPI.exportWorkspaceBackup({
+        activeProjectId,
+        projects: projects.map((project) => ({
+          id: project.id,
+          projectPath: project.projectPath,
+          projectName: getProjectDisplayName(project),
+          state: createProjectPayload(project.chatbot),
+        })),
+        globalProfilePresets,
+      })
+
+      if (result.canceled) {
+        return
+      }
+
+      setStatus({
+        kind: 'success',
+        message: `전체 백업을 저장했습니다. 프로젝트 ${result.projectCount ?? projects.length}개 / 포함 파일 ${result.fileCount ?? 0}개`,
+      })
+    } catch {
+      setAutoSaveStatus('error')
+      setStatus({
+        kind: 'error',
+        message: '전체 백업 저장에 실패했습니다.',
+      })
+    }
+  }
+
+  async function handleImportProjectBackup() {
+    if (!window.electronAPI?.importProjectBackup) {
+      setStatus({
+        kind: 'error',
+        message: '백업 가져오기는 Electron 앱에서 사용할 수 있습니다.',
+      })
+      return
+    }
+
+    try {
+      const result = await window.electronAPI.importProjectBackup()
+
+      if (result.canceled || !result.path) {
+        return
+      }
+
+      const importedProjects =
+        result.projects && result.projects.length > 0
+          ? result.projects
+          : result.path
+            ? [
+                {
+                  sourceId: result.activeProjectSourceId ?? '',
+                  path: result.path,
+                  state: result.state,
+                  characterFolders: result.characterFolders ?? [],
+                  fileCount: result.fileCount ?? 0,
+                },
+              ]
+            : []
+      const normalizedImports = importedProjects
+        .map((project) => ({
+          ...project,
+          payload: normalizeProjectPayload(project.state),
+        }))
+        .filter(
+          (project): project is typeof project & { payload: ProjectPayload } =>
+            Boolean(project.payload),
+        )
+
+      if (normalizedImports.length === 0) {
+        setStatus({
+          kind: 'error',
+          message: '백업 안의 프로젝트 데이터를 읽지 못했습니다.',
+        })
+        return
+      }
+
+      const importedGlobalProfilePresets = normalizeProfilePresets({
+        profilePresets: result.globalProfilePresets,
+      })
+      const importedProfilePresets = [
+        ...normalizedImports.flatMap((project) => project.payload.chatbot.profilePresets),
+        ...importedGlobalProfilePresets,
+      ]
+      const nextGlobalProfilePresets = mergeProfilePresets([
+        ...globalProfilePresets,
+        ...importedProfilePresets,
+      ])
+      const nextProjects = remapProjectPresetAssignments(
+        normalizedImports.map((project) =>
+          createProjectWorkspace(
+            project.path,
+            mergeChatbotWithCharacterFolders(project.payload.chatbot, project.characterFolders),
+            createId('project'),
+          ),
+        ),
+        nextGlobalProfilePresets,
+      )
+      const activeImportedIndex = normalizedImports.findIndex(
+        (project) => project.sourceId && project.sourceId === result.activeProjectSourceId,
+      )
+      const nextActiveProject = nextProjects[Math.max(activeImportedIndex, 0)] ?? nextProjects[0]
+
+      if (importedProfilePresets.length > 0) {
+        setGlobalProfilePresets(nextGlobalProfilePresets)
+      }
+      setProjects((currentProjects) => [...currentProjects, ...nextProjects])
+      setActiveProjectId(nextActiveProject.id)
+      setImagePreviews({})
+      setFailedImageKeys(new Set())
+      setAutoSaveStatus('idle')
+      setActiveTool('profile')
+      setStatus({
+        kind: 'success',
+        message: `백업을 새 프로젝트로 가져왔습니다. 프로젝트 ${nextProjects.length}개 / 복원 파일 ${result.fileCount ?? 0}개`,
+      })
+    } catch {
+      setStatus({
+        kind: 'error',
+        message: '백업 가져오기에 실패했습니다. 새 프로젝트 폴더는 비어 있어야 합니다.',
+      })
     }
   }
 
@@ -4274,6 +4484,36 @@ function BabeChatApp() {
               <FolderOpen size={15} aria-hidden="true" />
               저장 폴더 변경
             </button>
+            <div className="sidebar-backup-actions">
+              <button
+                className="icon-text-button sidebar-action-button"
+                type="button"
+                onClick={() => void handleExportProjectBackup()}
+                disabled={!projectPath}
+                title={projectPath ? '현재 프로젝트를 .babechat 파일로 백업' : '프로젝트 폴더가 필요합니다.'}
+              >
+                <Save size={15} aria-hidden="true" />
+                프로젝트 백업
+              </button>
+              <button
+                className="icon-text-button sidebar-action-button"
+                type="button"
+                onClick={() => void handleExportWorkspaceBackup()}
+                title="열려 있는 모든 프로젝트와 전역 프리셋을 백업"
+              >
+                <Save size={15} aria-hidden="true" />
+                전체 백업
+              </button>
+              <button
+                className="icon-text-button sidebar-action-button"
+                type="button"
+                onClick={() => void handleImportProjectBackup()}
+                title="백업을 새 프로젝트 폴더로 가져오기"
+              >
+                <FolderOpen size={15} aria-hidden="true" />
+                백업 가져오기
+              </button>
+            </div>
           </div>
 
           <div className="tool-nav" role="list">

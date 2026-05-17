@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     node: process.versions.node,
   },
   selectProjectFolder: () => ipcRenderer.invoke('project:select-folder'),
+  exportProjectBackup: (payload) => ipcRenderer.invoke('backup:export-project', payload),
+  exportWorkspaceBackup: (payload) => ipcRenderer.invoke('backup:export-workspace', payload),
+  importProjectBackup: () => ipcRenderer.invoke('backup:import-project'),
   saveProjectState: (projectPath, state) =>
     ipcRenderer.invoke('project:save-state', { projectPath, state }),
   ensureCharacterFolder: (projectPath, characterCode) =>

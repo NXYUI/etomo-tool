@@ -14,6 +14,48 @@ interface Window {
       state?: unknown
       characterFolders?: string[]
     }>
+    exportProjectBackup: (payload: {
+      projectId?: string
+      projectPath: string
+      projectName: string
+      state: unknown
+      globalProfilePresets: unknown[]
+    }) => Promise<{
+      canceled: boolean
+      filePath?: string
+      fileCount?: number
+    }>
+    exportWorkspaceBackup: (payload: {
+      activeProjectId: string
+      projects: Array<{
+        id: string
+        projectPath: string
+        projectName: string
+        state: unknown
+      }>
+      globalProfilePresets: unknown[]
+    }) => Promise<{
+      canceled: boolean
+      filePath?: string
+      projectCount?: number
+      fileCount?: number
+    }>
+    importProjectBackup: () => Promise<{
+      canceled: boolean
+      path?: string
+      state?: unknown
+      characterFolders?: string[]
+      projects?: Array<{
+        sourceId?: string
+        path: string
+        state: unknown
+        characterFolders: string[]
+        fileCount: number
+      }>
+      activeProjectSourceId?: string
+      globalProfilePresets?: unknown[]
+      fileCount?: number
+    }>
     saveProjectState: (
       projectPath: string,
       state: unknown,
