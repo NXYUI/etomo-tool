@@ -668,6 +668,12 @@ button:focus-visible,
   margin-top: 2px;
 }
 
+.sidebar-backup-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
 .sidebar-label {
   color: var(--muted);
   font-size: 0.68rem;

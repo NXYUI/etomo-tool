@@ -1,9 +1,12 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron')
 const fs = require('node:fs/promises')
 const path = require('node:path')
+const AdmZip = require('adm-zip')
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
 const PROJECT_FILE_NAME = 'babechat.project.json'
+const BACKUP_FORMAT = 'babechat-backup'
+const BACKUP_FORMAT_VERSION = 1
 
 function normalizeProjectPath(projectPath) {
   if (typeof projectPath !== 'string' || projectPath.trim() === '') {
@@ -70,6 +73,206 @@ function mimeFromExtension(filePath) {
     case '.png':
     default:
       return 'image/png'
+  }
+}
+
+function toArchivePath(...segments) {
+  return segments
+    .join('/')
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\/+/, '')
+}
+
+function timestampForFileName() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+function parseJsonEntry(zip, entryName) {
+  const entry = zip.getEntry(entryName)
+
+  if (!entry || entry.isDirectory) {
+    throw new Error(`${entryName} is missing from the backup.`)
+  }
+
+  return JSON.parse(zip.readAsText(entry))
+}
+
+function getSafeArchiveRelativePath(entryName, rootEntryName) {
+  const normalizedEntryName = toArchivePath(entryName)
+  const normalizedRootEntryName = `${toArchivePath(rootEntryName).replace(/\/$/, '')}/`
+
+  if (!normalizedEntryName.startsWith(normalizedRootEntryName)) {
+    return null
+  }
+
+  const relativeEntryName = normalizedEntryName.slice(normalizedRootEntryName.length)
+
+  if (!relativeEntryName || path.isAbsolute(relativeEntryName)) {
+    return null
+  }
+
+  const normalizedRelativePath = path.normalize(relativeEntryName)
+
+  if (
+    normalizedRelativePath === '.' ||
+    normalizedRelativePath.startsWith('..') ||
+    path.isAbsolute(normalizedRelativePath)
+  ) {
+    throw new Error('Backup contains an unsafe file path.')
+  }
+
+  return normalizedRelativePath
+}
+
+async function addProjectFilesToBackup(zip, projectPath, filesRoot, skipAbsolutePath) {
+  const root = normalizeProjectPath(projectPath)
+  const skippedPath = skipAbsolutePath ? path.resolve(skipAbsolutePath) : ''
+  let fileCount = 0
+
+  async function visit(directoryPath) {
+    const entries = await fs.readdir(directoryPath, { withFileTypes: true })
+
+    for (const entry of entries) {
+      const absolutePath = path.join(directoryPath, entry.name)
+      const relativePath = path.relative(root, absolutePath)
+
+      if (!relativePath || relativePath === PROJECT_FILE_NAME) {
+        continue
+      }
+
+      if (skippedPath && path.resolve(absolutePath) === skippedPath) {
+        continue
+      }
+
+      if (entry.isDirectory()) {
+        await visit(absolutePath)
+        continue
+      }
+
+      if (!entry.isFile()) {
+        continue
+      }
+
+      const archivePath = toArchivePath(filesRoot, relativePath)
+      zip.addFile(archivePath, await fs.readFile(absolutePath))
+      fileCount += 1
+    }
+  }
+
+  await visit(root)
+
+  return fileCount
+}
+
+async function ensureDirectoryIsEmpty(directoryPath) {
+  try {
+    const entries = await fs.readdir(directoryPath)
+
+    if (entries.length > 0) {
+      throw new Error('Restore target folder must be empty.')
+    }
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      await fs.mkdir(directoryPath, { recursive: true })
+      return
+    }
+
+    throw error
+  }
+}
+
+function createUniqueFolderName(name, usedNames) {
+  const baseName = sanitizeSegment(name || 'project')
+  let folderName = baseName
+  let suffix = 2
+
+  while (usedNames.has(folderName.toLowerCase())) {
+    folderName = `${baseName}-${suffix}`
+    suffix += 1
+  }
+
+  usedNames.add(folderName.toLowerCase())
+
+  return folderName
+}
+
+async function addProjectBackupEntry(zip, project, projectIndex, backupFilePath) {
+  const projectId = `project-${String(projectIndex + 1).padStart(3, '0')}`
+  const projectEntryRoot = toArchivePath('projects', projectId)
+  const filesRoot = toArchivePath(projectEntryRoot, 'files')
+  const projectPath =
+    typeof project.projectPath === 'string' && project.projectPath.trim()
+      ? normalizeProjectPath(project.projectPath)
+      : ''
+  const state = project.state || (projectPath ? await readProjectState(projectPath) : null)
+
+  if (!state || typeof state !== 'object') {
+    throw new Error('Project state is required for backup.')
+  }
+
+  zip.addFile(
+    toArchivePath(projectEntryRoot, PROJECT_FILE_NAME),
+    Buffer.from(JSON.stringify(state, null, 2), 'utf8'),
+  )
+
+  const fileCount = projectPath
+    ? await addProjectFilesToBackup(zip, projectPath, filesRoot, backupFilePath)
+    : 0
+
+  return {
+    manifestProject: {
+      id: projectId,
+      sourceId: typeof project.id === 'string' ? project.id : '',
+      name: project.projectName || (projectPath ? path.basename(projectPath) : projectId),
+      originalPath: projectPath,
+      projectFile: toArchivePath(projectEntryRoot, PROJECT_FILE_NAME),
+      filesRoot,
+    },
+    fileCount,
+  }
+}
+
+async function restoreProjectFromBackup(zip, project, projectPath) {
+  const projectState = parseJsonEntry(zip, project.projectFile)
+
+  await fs.mkdir(projectPath, { recursive: true })
+  await fs.writeFile(
+    path.join(projectPath, PROJECT_FILE_NAME),
+    JSON.stringify(projectState, null, 2),
+    'utf8',
+  )
+
+  const filesRoot = typeof project.filesRoot === 'string' ? project.filesRoot : ''
+  let fileCount = 0
+
+  if (filesRoot) {
+    for (const entry of zip.getEntries()) {
+      const relativePath = getSafeArchiveRelativePath(entry.entryName, filesRoot)
+
+      if (!relativePath) {
+        continue
+      }
+
+      const absolutePath = ensureInsideProject(projectPath, path.join(projectPath, relativePath))
+
+      if (entry.isDirectory) {
+        await fs.mkdir(absolutePath, { recursive: true })
+        continue
+      }
+
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true })
+      await fs.writeFile(absolutePath, entry.getData())
+      fileCount += 1
+    }
+  }
+
+  return {
+    sourceId: typeof project.sourceId === 'string' ? project.sourceId : '',
+    path: projectPath,
+    state: projectState,
+    characterFolders: await listCharacterFolders(projectPath),
+    fileCount,
   }
 }
 
@@ -172,6 +375,213 @@ ipcMain.handle('project:save-state', async (_event, payload) => {
   await fs.rename(tempProjectFilePath, projectFilePath)
 
   return { ok: true, filePath: projectFilePath }
+})
+
+ipcMain.handle('backup:export-project', async (_event, payload) => {
+  const projectPath = normalizeProjectPath(payload.projectPath)
+  const projectName = sanitizeSegment(payload.projectName || path.basename(projectPath))
+  const result = await dialog.showSaveDialog({
+    title: 'BabeChat 백업 저장',
+    defaultPath: `${projectName}_${timestampForFileName()}.babechat`,
+    filters: [
+      { name: 'BabeChat Backup', extensions: ['babechat'] },
+      { name: 'ZIP Archive', extensions: ['zip'] },
+    ],
+  })
+
+  if (result.canceled || !result.filePath) {
+    return { canceled: true }
+  }
+
+  const backupFilePath = path.resolve(result.filePath)
+  const zip = new AdmZip()
+  const { manifestProject, fileCount } = await addProjectBackupEntry(
+    zip,
+    {
+      id: payload.projectId,
+      projectPath,
+      projectName: payload.projectName || path.basename(projectPath),
+      state: payload.state,
+    },
+    0,
+    backupFilePath,
+  )
+  const manifest = {
+    format: BACKUP_FORMAT,
+    formatVersion: BACKUP_FORMAT_VERSION,
+    appVersion: app.getVersion(),
+    createdAt: new Date().toISOString(),
+    scope: 'project',
+    projects: [manifestProject],
+  }
+  const globalPresets = {
+    globalProfilePresets: Array.isArray(payload.globalProfilePresets)
+      ? payload.globalProfilePresets
+      : [],
+  }
+
+  zip.addFile('backup.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'))
+  zip.addFile(
+    'global-presets.json',
+    Buffer.from(JSON.stringify(globalPresets, null, 2), 'utf8'),
+  )
+
+  await fs.mkdir(path.dirname(backupFilePath), { recursive: true })
+  zip.writeZip(backupFilePath)
+
+  return {
+    canceled: false,
+    filePath: backupFilePath,
+    fileCount,
+  }
+})
+
+ipcMain.handle('backup:export-workspace', async (_event, payload) => {
+  const projects = Array.isArray(payload.projects) ? payload.projects : []
+
+  if (projects.length === 0) {
+    throw new Error('At least one project is required for backup.')
+  }
+
+  const result = await dialog.showSaveDialog({
+    title: 'BabeChat 전체 백업 저장',
+    defaultPath: `BabeChat_Workspace_${timestampForFileName()}.babechat`,
+    filters: [
+      { name: 'BabeChat Backup', extensions: ['babechat'] },
+      { name: 'ZIP Archive', extensions: ['zip'] },
+    ],
+  })
+
+  if (result.canceled || !result.filePath) {
+    return { canceled: true }
+  }
+
+  const backupFilePath = path.resolve(result.filePath)
+  const zip = new AdmZip()
+  const manifestProjects = []
+  let fileCount = 0
+
+  for (const [index, project] of projects.entries()) {
+    const entry = await addProjectBackupEntry(zip, project, index, backupFilePath)
+    manifestProjects.push(entry.manifestProject)
+    fileCount += entry.fileCount
+  }
+
+  const manifest = {
+    format: BACKUP_FORMAT,
+    formatVersion: BACKUP_FORMAT_VERSION,
+    appVersion: app.getVersion(),
+    createdAt: new Date().toISOString(),
+    scope: 'workspace',
+    activeProjectSourceId: typeof payload.activeProjectId === 'string' ? payload.activeProjectId : '',
+    projects: manifestProjects,
+  }
+  const globalPresets = {
+    globalProfilePresets: Array.isArray(payload.globalProfilePresets)
+      ? payload.globalProfilePresets
+      : [],
+  }
+
+  zip.addFile('backup.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'))
+  zip.addFile(
+    'global-presets.json',
+    Buffer.from(JSON.stringify(globalPresets, null, 2), 'utf8'),
+  )
+
+  await fs.mkdir(path.dirname(backupFilePath), { recursive: true })
+  zip.writeZip(backupFilePath)
+
+  return {
+    canceled: false,
+    filePath: backupFilePath,
+    projectCount: manifestProjects.length,
+    fileCount,
+  }
+})
+
+ipcMain.handle('backup:import-project', async () => {
+  const backupResult = await dialog.showOpenDialog({
+    title: 'BabeChat 백업 선택',
+    properties: ['openFile'],
+    filters: [
+      { name: 'BabeChat Backup', extensions: ['babechat'] },
+      { name: 'ZIP Archive', extensions: ['zip'] },
+    ],
+  })
+
+  if (backupResult.canceled || backupResult.filePaths.length === 0) {
+    return { canceled: true }
+  }
+
+  const backupFilePath = backupResult.filePaths[0]
+  const zip = new AdmZip(backupFilePath)
+  const manifest = parseJsonEntry(zip, 'backup.json')
+
+  if (manifest.format !== BACKUP_FORMAT || manifest.formatVersion !== BACKUP_FORMAT_VERSION) {
+    throw new Error('Unsupported BabeChat backup format.')
+  }
+
+  const backupProjects = Array.isArray(manifest.projects)
+    ? manifest.projects.filter((project) => project && typeof project.projectFile === 'string')
+    : []
+
+  if (backupProjects.length === 0) {
+    throw new Error('Backup does not contain a project.')
+  }
+
+  const restoreResult = await dialog.showOpenDialog({
+    title: manifest.scope === 'workspace' ? '새 프로젝트 묶음 폴더 선택' : '새 프로젝트 폴더 선택',
+    properties: ['openDirectory', 'createDirectory'],
+  })
+
+  if (restoreResult.canceled || restoreResult.filePaths.length === 0) {
+    return { canceled: true }
+  }
+
+  const restoreRoot = normalizeProjectPath(restoreResult.filePaths[0])
+  let fileCount = 0
+  let restoredProjects = []
+
+  await ensureDirectoryIsEmpty(restoreRoot)
+
+  if (manifest.scope === 'workspace') {
+    const usedFolderNames = new Set()
+
+    for (const [index, project] of backupProjects.entries()) {
+      const folderName = createUniqueFolderName(project.name || project.id || `project-${index + 1}`, usedFolderNames)
+      const projectPath = ensureInsideProject(restoreRoot, path.join(restoreRoot, folderName))
+      const restoredProject = await restoreProjectFromBackup(zip, project, projectPath)
+      restoredProjects.push(restoredProject)
+      fileCount += restoredProject.fileCount
+    }
+  } else {
+    const restoredProject = await restoreProjectFromBackup(zip, backupProjects[0], restoreRoot)
+    restoredProjects = [restoredProject]
+    fileCount = restoredProject.fileCount
+  }
+
+  let globalProfilePresets = []
+
+  try {
+    const globalPresetState = parseJsonEntry(zip, 'global-presets.json')
+    globalProfilePresets = Array.isArray(globalPresetState.globalProfilePresets)
+      ? globalPresetState.globalProfilePresets
+      : []
+  } catch {
+    globalProfilePresets = []
+  }
+
+  return {
+    canceled: false,
+    path: restoredProjects[0]?.path,
+    state: restoredProjects[0]?.state,
+    characterFolders: restoredProjects[0]?.characterFolders ?? [],
+    projects: restoredProjects,
+    activeProjectSourceId:
+      typeof manifest.activeProjectSourceId === 'string' ? manifest.activeProjectSourceId : '',
+    globalProfilePresets,
+    fileCount,
+  }
 })
 
 ipcMain.handle('project:save-image-file', async (_event, payload) => {
