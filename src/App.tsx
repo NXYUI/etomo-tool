@@ -4410,7 +4410,7 @@ function EtomoToolApp() {
       {isDashboardVisible && (
         <section className="startup-dashboard" aria-label="etomo-tool 대시보드">
           <div className="startup-dashboard-image">
-            <img src="/Dashboard.png" alt="etomo-tool dashboard" />
+            <img src={`${import.meta.env.BASE_URL}Dashboard.png`} alt="etomo-tool dashboard" />
           </div>
           <button
             className="startup-dashboard-close"
