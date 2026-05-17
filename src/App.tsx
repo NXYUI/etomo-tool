@@ -38,7 +38,7 @@ import remarkGfm from 'remark-gfm'
 type TokenProvider = 'claude' | 'gemini'
 type StatusKind = 'info' | 'success' | 'warning' | 'error'
 type AutoSaveStatus = 'idle' | 'saving' | 'saved' | 'error'
-type ToolId = 'overview' | 'images' | 'editor' | 'lorebook' | 'profile'
+type ToolId = 'overview' | 'guidelines' | 'images' | 'editor' | 'lorebook' | 'profile'
 
 interface EmotionSlot {
   label: string
@@ -229,15 +229,87 @@ const TOOL_ITEMS: ToolItem[] = [
     label: '로어북',
     description: '호출어와 코르크 보드',
   },
+  {
+    id: 'guidelines',
+    label: '유저 가이드라인',
+    description: '사용 설명서',
+  },
 ]
 
 const TOOL_HEADING_IDS: Record<ToolId, string> = {
   overview: 'overview-heading',
+  guidelines: 'guidelines-heading',
   images: 'image-code-heading',
   editor: 'editor-heading',
   lorebook: 'lore-heading',
   profile: 'profile-heading',
 }
+
+const APP_GUIDELINE_QUICK_STEPS = [
+  '새 폴더를 만들고 프로젝트 폴더로 지정합니다.',
+  '챗봇 시트에서 캐릭터 코드를 추가합니다.',
+  '캐릭터 표시 이름과 시트 항목을 필요한 만큼 작성합니다.',
+  '이미지 코드에서 상태 코드를 입력하고 격자를 확인합니다.',
+  '각 상태 카드에 이미지를 등록합니다.',
+  '프롬프트, 로어북, 백업을 정리합니다.',
+]
+
+const APP_GUIDELINE_SECTIONS = [
+  {
+    title: '프로젝트 폴더',
+    items: [
+      '프로젝트 폴더 하나는 챗봇 하나의 작업 공간입니다.',
+      '되도록 이미 존재하는 폴더를 바로 지정하지 말고, 새 폴더를 만든 뒤 프로젝트 폴더로 지정하세요.',
+      '기존 자료는 새 프로젝트 폴더가 만들어진 뒤 필요한 파일만 옮기는 편이 안전합니다.',
+      '프로젝트 데이터는 지정한 폴더 안의 etomo.project.json에 저장됩니다.',
+    ],
+  },
+  {
+    title: '캐릭터 코드와 시트',
+    items: [
+      '챗봇 안의 등장인물마다 캐릭터 코드를 하나씩 등록합니다.',
+      '캐릭터 코드는 프로젝트 폴더 바로 아래에 만들어지는 폴더 이름입니다.',
+      '표시 이름은 앱에서 알아보기 위한 이름이며, 실제 폴더명은 캐릭터 코드가 기준입니다.',
+      '시트 항목은 캐릭터마다 따로 관리되므로 필요한 항목만 직접 추가하세요.',
+    ],
+  },
+  {
+    title: '이미지 코드',
+    items: [
+      '이미지 코드는 KEY=VALUE 형식만 인식합니다. 형식에 맞지 않는 줄은 무시됩니다.',
+      '예: 평상시=001, 웃음=002',
+      'VALUE에 쉼표가 있으면 각 값이 별도 카드로 분리됩니다. 예: 식사=16,17,18',
+      '이미지를 등록하면 선택한 캐릭터 코드 폴더 안에 상태 코드 파일명으로 저장됩니다.',
+    ],
+  },
+  {
+    title: '프롬프트',
+    items: [
+      '프롬프트는 탭 단위로 관리합니다.',
+      '입력 내용은 프로젝트 JSON에 자동 저장됩니다.',
+      '글자 수는 JavaScript value.length 기준(바베챗 상세 설정 입력란 토큰)으로 계산합니다.',
+      '마크다운 미리보기는 필요할 때만 켜고, 앱을 다시 열면 기본적으로 꺼진 상태에서 시작합니다.',
+    ],
+  },
+  {
+    title: '로어북',
+    items: [
+      '로어북은 카드 단위로 작성합니다.',
+      '각 카드는 제목, 본문, 호출어를 가집니다.',
+      '호출어는 카드 하나당 최대 5개까지 등록할 수 있습니다.',
+      '카드 순서는 드래그 앤 드롭 또는 우선순위 버튼으로 조정합니다.',
+    ],
+  },
+  {
+    title: '백업',
+    items: [
+      '프로젝트 백업은 현재 프로젝트만 .etomo 파일로 저장합니다.',
+      '전체 백업은 열려 있는 프로젝트와 전역 프리셋을 함께 저장합니다.',
+      '가져오기는 기존 프로젝트에 병합하거나 덮어쓰지 않고 새 프로젝트로만 복원합니다.',
+      '중요한 작업 전에는 프로젝트 폴더 자체도 별도로 복사해 두는 편이 좋습니다.',
+    ],
+  },
+]
 
 function createId(prefix: string) {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -985,6 +1057,7 @@ function loadLocalSnapshot(): LocalSnapshot {
             parsedSnapshot.activeTool === 'editor' ||
             parsedSnapshot.activeTool === 'lorebook' ||
             parsedSnapshot.activeTool === 'profile' ||
+            parsedSnapshot.activeTool === 'guidelines' ||
             parsedSnapshot.activeTool === 'overview'
               ? parsedSnapshot.activeTool
               : 'profile',
@@ -1028,6 +1101,13 @@ function getSlotKey(slot: EmotionSlot) {
 
 function getTextLength(value: string) {
   return value.length
+}
+
+function getAppGuidelinesText() {
+  return APP_GUIDELINE_SECTIONS.map(
+    (section) =>
+      `${section.title}\n${section.items.map((item) => `- ${item}`).join('\n')}`,
+  ).join('\n\n')
 }
 
 function findCompletionMatch(
@@ -1129,6 +1209,8 @@ function getToolMetric(toolId: ToolId, chatbot: ChatbotState, textLength: number
   switch (toolId) {
     case 'overview':
       return `${chatbot.characters.length}명`
+    case 'guidelines':
+      return `${APP_GUIDELINE_SECTIONS.length}개 항목`
     case 'images':
       return chatbot.activeCharacterCode ? `${chatbot.characters.length}명` : '캐릭터 코드 필요'
     case 'editor':
@@ -1144,6 +1226,8 @@ function renderToolIcon(toolId: ToolId) {
   switch (toolId) {
     case 'overview':
       return <ClipboardList size={18} aria-hidden="true" />
+    case 'guidelines':
+      return <ClipboardPaste size={18} aria-hidden="true" />
     case 'images':
       return <Grid3X3 size={18} aria-hidden="true" />
     case 'editor':
@@ -1898,6 +1982,23 @@ function EtomoToolApp() {
       setStatus({
         kind: 'error',
         message: '시트 텍스트를 클립보드에 복사하지 못했습니다.',
+      })
+    }
+  }
+
+  async function handleCopyUserGuidelines() {
+    const text = getAppGuidelinesText()
+
+    try {
+      await copyTextToClipboard(text)
+      setStatus({
+        kind: 'success',
+        message: '유저 가이드라인을 클립보드에 복사했습니다.',
+      })
+    } catch {
+      setStatus({
+        kind: 'error',
+        message: '유저 가이드라인 복사에 실패했습니다.',
       })
     }
   }
@@ -3145,6 +3246,21 @@ function EtomoToolApp() {
 
           <section className="overview-section">
             <div className="subsection-heading">
+              <ClipboardPaste size={17} aria-hidden="true" />
+              <h3>유저 가이드라인</h3>
+            </div>
+            <div className="overview-detail-list">
+              <span>{APP_GUIDELINE_SECTIONS.length.toLocaleString()}개 항목</span>
+              <span>읽기 전용</span>
+            </div>
+            <button className="icon-text-button" type="button" onClick={() => setActiveTool('guidelines')}>
+              <ClipboardPaste size={15} aria-hidden="true" />
+              가이드라인으로 이동
+            </button>
+          </section>
+
+          <section className="overview-section">
+            <div className="subsection-heading">
               <Grid3X3 size={17} aria-hidden="true" />
               <h3>이미지 코드</h3>
             </div>
@@ -3222,6 +3338,70 @@ function EtomoToolApp() {
               시트로 이동
             </button>
           </section>
+        </div>
+      </>
+    )
+  }
+
+  function renderGuidelinesTool() {
+    const guidelineText = getAppGuidelinesText()
+    const guidelineLength = getTextLength(guidelineText)
+
+    return (
+      <>
+        <div className="section-heading">
+          <ClipboardPaste size={18} aria-hidden="true" />
+          <h2 id="guidelines-heading">유저 가이드라인</h2>
+          <button
+            className="icon-text-button"
+            type="button"
+            onClick={() => void handleCopyUserGuidelines()}
+            title="유저 가이드라인 복사"
+          >
+            <FileText size={15} aria-hidden="true" />
+            복사
+          </button>
+        </div>
+
+        <div className="guidelines-workspace">
+          <div className="guidelines-document" aria-label="유저 가이드라인 문서">
+            {APP_GUIDELINE_SECTIONS.map((section) => (
+              <section className="guideline-card" key={section.title}>
+                <h3>{section.title}</h3>
+                <ol>
+                  {section.items.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ol>
+              </section>
+            ))}
+          </div>
+
+          <aside className="guidelines-side-panel" aria-label="가이드라인 정보">
+            <div className="guidelines-stat-list">
+              <div>
+                <span>항목</span>
+                <strong>{APP_GUIDELINE_SECTIONS.length.toLocaleString()}</strong>
+              </div>
+              <div>
+                <span>단계</span>
+                <strong>{APP_GUIDELINE_QUICK_STEPS.length.toLocaleString()}</strong>
+              </div>
+              <div>
+                <span>글자</span>
+                <strong>{guidelineLength.toLocaleString()}</strong>
+              </div>
+            </div>
+
+            <div className="guidelines-summary" aria-label="권장 작업 순서">
+              <strong>권장 작업 순서</strong>
+              <ol>
+                {APP_GUIDELINE_QUICK_STEPS.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
+            </div>
+          </aside>
         </div>
       </>
     )
@@ -4394,6 +4574,8 @@ function EtomoToolApp() {
     switch (activeTool) {
       case 'overview':
         return renderOverviewTool()
+      case 'guidelines':
+        return renderGuidelinesTool()
       case 'images':
         return renderImageTool()
       case 'editor':
