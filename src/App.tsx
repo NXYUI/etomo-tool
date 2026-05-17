@@ -171,7 +171,7 @@ interface AppErrorBoundaryState {
   error: Error | null
 }
 
-const STORAGE_KEY = 'babechat.localProjectState'
+const STORAGE_KEY = 'etomo.localProjectState'
 const PROJECT_VERSION = 16
 const PROMPT_FONT_DEFAULT_SIZE = 14
 const PROMPT_FONT_MIN_SIZE = 11
@@ -210,24 +210,24 @@ const TOOL_ITEMS: ToolItem[] = [
     description: '프로젝트 현황',
   },
   {
-    id: 'images',
-    label: '이미지 코드',
-    description: '표정 코드와 이미지 파일',
-  },
-  {
     id: 'editor',
     label: '프롬프트',
     description: '본문, 글자 수, 자동완성',
   },
   {
-    id: 'lorebook',
-    label: '로어북',
-    description: '호출어와 코르크 보드',
-  },
-  {
     id: 'profile',
     label: '챗봇 시트',
     description: '프로필 테이블',
+  },
+  {
+    id: 'images',
+    label: '이미지 코드',
+    description: '표정 코드와 이미지 파일',
+  },
+  {
+    id: 'lorebook',
+    label: '로어북',
+    description: '호출어와 코르크 보드',
   },
 ]
 
@@ -1230,7 +1230,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('BabeChat render error', error, errorInfo)
+    console.error('etomo-tool render error', error, errorInfo)
   }
 
   render() {
@@ -1253,7 +1253,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
   }
 }
 
-function BabeChatApp() {
+function EtomoToolApp() {
   const initialSnapshot = useMemo(loadLocalSnapshot, [])
   const [projects, setProjects] = useState<ProjectWorkspace[]>(initialSnapshot.projects)
   const [globalProfilePresets, setGlobalProfilePresets] = useState<ProfilePreset[]>(
@@ -1267,6 +1267,8 @@ function BabeChatApp() {
   const [savingSlotId, setSavingSlotId] = useState<string | null>(null)
   const [deletingSlotId, setDeletingSlotId] = useState<string | null>(null)
   const [deleteTargetSlotKey, setDeleteTargetSlotKey] = useState<string | null>(null)
+  const [promptCloseTargetId, setPromptCloseTargetId] = useState<string | null>(null)
+  const [isDashboardVisible, setIsDashboardVisible] = useState(true)
   const [newCharacterCode, setNewCharacterCode] = useState('')
   const [characterCodeDraft, setCharacterCodeDraft] = useState('')
   const [characterDisplayNameDraft, setCharacterDisplayNameDraft] = useState('')
@@ -1297,6 +1299,18 @@ function BabeChatApp() {
     projects[0]) as ProjectWorkspace
   const projectPath = activeProject.projectPath
   const chatbot = activeProject.chatbot
+
+  useEffect(() => {
+    if (!isDashboardVisible) {
+      return undefined
+    }
+
+    const dashboardTimer = window.setTimeout(() => {
+      setIsDashboardVisible(false)
+    }, 10000)
+
+    return () => window.clearTimeout(dashboardTimer)
+  }, [isDashboardVisible])
 
   useEffect(() => {
     setLoreCardWidthText(String(chatbot.loreCardWidth))
@@ -1572,6 +1586,9 @@ function BabeChatApp() {
   const activeToolHeadingId = TOOL_HEADING_IDS[activeTool]
   const deleteTargetSlot = deleteTargetSlotKey
     ? activeCharacter?.slots.find((slot) => getSlotKey(slot) === deleteTargetSlotKey)
+    : undefined
+  const promptCloseTargetTab = promptCloseTargetId
+    ? chatbot.promptTabs.find((tab) => tab.id === promptCloseTargetId)
     : undefined
 
   useEffect(() => {
@@ -2388,7 +2405,7 @@ function BabeChatApp() {
       setStatus({
         kind: result.state ? 'warning' : 'success',
         message: result.state
-          ? '저장 폴더를 변경했습니다. 선택한 폴더의 기존 BabeChat 저장 파일은 현재 챗봇 내용으로 갱신됩니다.'
+          ? '저장 폴더를 변경했습니다. 선택한 폴더의 기존 etomo-tool 저장 파일은 현재 챗봇 내용으로 갱신됩니다.'
           : '현재 챗봇의 프로젝트 폴더를 변경했습니다.',
       })
     } catch {
@@ -2943,7 +2960,7 @@ function BabeChatApp() {
     }))
   }
 
-  function handleClosePromptTab(tabId: string) {
+  function closePromptTab(tabId: string) {
     if (chatbot.promptTabs.length <= 1) {
       setStatus({
         kind: 'warning',
@@ -2967,6 +2984,35 @@ function BabeChatApp() {
     }))
     setCursorIndex(0)
     setCompletionSuggestionSelected(false)
+  }
+
+  function handleClosePromptTab(tabId: string) {
+    if (chatbot.promptTabs.length <= 1) {
+      closePromptTab(tabId)
+      return
+    }
+
+    const targetTab = chatbot.promptTabs.find((tab) => tab.id === tabId)
+
+    if (!targetTab) {
+      return
+    }
+
+    if (targetTab.text.length > 0) {
+      setPromptCloseTargetId(tabId)
+      return
+    }
+
+    closePromptTab(tabId)
+  }
+
+  function confirmClosePromptTab() {
+    if (!promptCloseTargetId) {
+      return
+    }
+
+    closePromptTab(promptCloseTargetId)
+    setPromptCloseTargetId(null)
   }
 
   function renderOverviewTool() {
@@ -4361,11 +4407,27 @@ function BabeChatApp() {
 
   return (
     <div className="workspace">
+      {isDashboardVisible && (
+        <section className="startup-dashboard" aria-label="etomo-tool 대시보드">
+          <div className="startup-dashboard-image">
+            <img src="/Dashboard.png" alt="etomo-tool dashboard" />
+          </div>
+          <button
+            className="startup-dashboard-close"
+            type="button"
+            aria-label="대시보드 닫기"
+            onClick={() => setIsDashboardVisible(false)}
+          >
+            닫기
+          </button>
+        </section>
+      )}
+
       <header className="topbar">
         <div className="brand">
           <PanelTop size={24} aria-hidden="true" />
           <div>
-            <strong>BabeChat</strong>
+            <strong>etomo-tool</strong>
             <span>AI 채팅 프롬프트 제작</span>
           </div>
         </div>
@@ -4490,7 +4552,7 @@ function BabeChatApp() {
                 type="button"
                 onClick={() => void handleExportProjectBackup()}
                 disabled={!projectPath}
-                title={projectPath ? '현재 프로젝트를 .babechat 파일로 백업' : '프로젝트 폴더가 필요합니다.'}
+                title={projectPath ? '현재 프로젝트를 .etomo 파일로 백업' : '프로젝트 폴더가 필요합니다.'}
               >
                 <Save size={15} aria-hidden="true" />
                 프로젝트 백업
@@ -4556,6 +4618,54 @@ function BabeChatApp() {
         )}
       </main>
 
+      {promptCloseTargetTab && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setPromptCloseTargetId(null)
+            }
+          }}
+        >
+          <section
+            className="confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="close-prompt-tab-title"
+          >
+            <div>
+              <AlertTriangle size={22} aria-hidden="true" />
+              <div>
+                <h2 id="close-prompt-tab-title">프롬프트 탭을 닫으시겠습니까?</h2>
+                <p>
+                  {promptCloseTargetTab.title.trim() || '이름 없는 탭'} 탭에{' '}
+                  {getTextLength(promptCloseTargetTab.text).toLocaleString()}자 입력되어 있습니다.
+                  닫으면 이 탭의 프롬프트가 삭제됩니다.
+                </p>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button
+                className="icon-text-button"
+                type="button"
+                onClick={() => setPromptCloseTargetId(null)}
+              >
+                취소
+              </button>
+              <button
+                className="primary-button danger-button"
+                type="button"
+                onClick={confirmClosePromptTab}
+              >
+                <X size={16} aria-hidden="true" />
+                닫기
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {deleteTargetSlot && (
         <div
           className="modal-backdrop"
@@ -4605,7 +4715,7 @@ function BabeChatApp() {
 export function App() {
   return (
     <AppErrorBoundary>
-      <BabeChatApp />
+      <EtomoToolApp />
     </AppErrorBoundary>
   )
 }
