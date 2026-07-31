@@ -22,7 +22,7 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react'
-import { Component, useEffect, useMemo, useRef, useState } from 'react'
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -356,9 +356,29 @@ function parseCodeText(input: string) {
 }
 
 function findInvalidCodeLines(input: string) {
-  void input
+  return input
+    .split(/\r?\n/)
+    .map((line, index) => ({ line: line.trim(), lineNumber: index + 1 }))
+    .filter(({ line }) => {
+      if (!line) {
+        return false
+      }
 
-  return []
+      const match = line.match(/^([^=]+?)=(.+)$/)
+
+      if (!match) {
+        return true
+      }
+
+      const label = match[1].trim()
+      const codes = match[2]
+        .split(',')
+        .map((code) => code.trim())
+        .filter(Boolean)
+
+      return label.length === 0 || codes.length === 0
+    })
+    .map(({ lineNumber }) => lineNumber)
 }
 
 function createSlot(label: string, code: string, previous?: EmotionSlot): EmotionSlot {
@@ -639,13 +659,15 @@ function normalizeTokenProvider(value: unknown): TokenProvider {
   return value === 'gemini' ? 'gemini' : 'claude'
 }
 
-function normalizeSlot(input: Partial<EmotionSlot>, fallbackIndex: number): EmotionSlot {
+function normalizeSlot(input: Partial<EmotionSlot> | null | undefined, fallbackIndex: number): EmotionSlot {
+  const slot: Partial<EmotionSlot> = input && typeof input === 'object' ? input : {}
+
   return {
-    label: typeof input.label === 'string' ? input.label : `항목 ${fallbackIndex + 1}`,
-    code: typeof input.code === 'string' ? input.code : String(fallbackIndex + 1).padStart(3, '0'),
-    imagePath: typeof input.imagePath === 'string' ? input.imagePath : undefined,
-    imageName: typeof input.imageName === 'string' ? input.imageName : undefined,
-    updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : undefined,
+    label: typeof slot.label === 'string' ? slot.label : `항목 ${fallbackIndex + 1}`,
+    code: typeof slot.code === 'string' ? slot.code : String(fallbackIndex + 1).padStart(3, '0'),
+    imagePath: typeof slot.imagePath === 'string' ? slot.imagePath : undefined,
+    imageName: typeof slot.imageName === 'string' ? slot.imageName : undefined,
+    updatedAt: typeof slot.updatedAt === 'string' ? slot.updatedAt : undefined,
   }
 }
 
@@ -712,11 +734,16 @@ function normalizeProfileFields(input: { profileFields?: unknown }) {
     return []
   }
 
-  const normalizedFields = input.profileFields.map((field) => ({
-    id: typeof field.id === 'string' ? field.id : createId('profile'),
-    name: typeof field.name === 'string' ? field.name : '',
-    value: typeof field.value === 'string' ? field.value : '',
-  }))
+  const normalizedFields = input.profileFields.map((rawField) => {
+    const field: Partial<ProfileField> =
+      rawField && typeof rawField === 'object' ? rawField : {}
+
+    return {
+      id: typeof field.id === 'string' ? field.id : createId('profile'),
+      name: typeof field.name === 'string' ? field.name : '',
+      value: typeof field.value === 'string' ? field.value : '',
+    }
+  })
   const containsOnlyEmptyLegacyDefaults =
     normalizedFields.length > 0 &&
     normalizedFields.every(
@@ -881,7 +908,9 @@ function normalizeChatbot(input: ChatbotInput, fallbackTitle = '새 챗봇'): Ch
     typeof input.activeCharacterCode === 'string' && characterCodes.has(input.activeCharacterCode)
       ? input.activeCharacterCode
       : normalizedPresetCharacters[0]?.code ?? ''
-  const rawLorebook = Array.isArray(input.lorebook) ? input.lorebook : []
+  const rawLorebook = Array.isArray(input.lorebook)
+    ? input.lorebook.filter((card): card is LoreCard => Boolean(card) && typeof card === 'object')
+    : []
   const legacySizedLoreCard = rawLorebook.find(
     (card) =>
       typeof (card as Partial<LoreCard> & { width?: unknown }).width === 'number' ||
@@ -933,11 +962,13 @@ function normalizeChatbot(input: ChatbotInput, fallbackTitle = '새 챗봇'): Ch
     loreCardHeight,
     loreGridColumns,
     completions: Array.isArray(input.completions)
-      ? input.completions.map((rule) => ({
-          id: typeof rule.id === 'string' ? rule.id : createId('completion'),
-          trigger: typeof rule.trigger === 'string' ? rule.trigger : '',
-          replacement: typeof rule.replacement === 'string' ? rule.replacement : '',
-        }))
+      ? input.completions
+          .filter((rule): rule is CompletionRule => Boolean(rule) && typeof rule === 'object')
+          .map((rule) => ({
+            id: typeof rule.id === 'string' ? rule.id : createId('completion'),
+            trigger: typeof rule.trigger === 'string' ? rule.trigger : '',
+            replacement: typeof rule.replacement === 'string' ? rule.replacement : '',
+          }))
       : [],
     lorebook: rawLorebook.length > 0
       ? rawLorebook.map((card) => ({
@@ -1455,22 +1486,55 @@ function EtomoToolApp() {
     }
   }, [activeProjectId, projects])
 
+  // 최신 스냅샷 쓰기 함수를 ref로 유지해, 디바운스 타이머와 beforeunload flush가
+  // 항상 마지막 상태를 저장하도록 한다. 쓰기 실패(쿼터 초과 등)가 앱을 죽이지 않게 감싼다.
+  const persistLocalSnapshotRef = useRef(() => {})
+  persistLocalSnapshotRef.current = () => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          version: PROJECT_VERSION,
+          activeProjectId,
+          activeTool,
+          projectsFolded,
+          projects: projects.map((project) => ({
+            ...project,
+            chatbot: getPersistedChatbot(project.chatbot),
+          })),
+          globalProfilePresets,
+        }),
+      )
+    } catch (error) {
+      console.error('로컬 스냅샷 저장에 실패했습니다.', error)
+    }
+  }
+
   useEffect(() => {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        version: PROJECT_VERSION,
-        activeProjectId,
-        activeTool,
-        projectsFolded,
-        projects: projects.map((project) => ({
-          ...project,
-          chatbot: getPersistedChatbot(project.chatbot),
-        })),
-        globalProfilePresets,
-      }),
-    )
+    const snapshotTimer = window.setTimeout(() => persistLocalSnapshotRef.current(), 500)
+
+    return () => window.clearTimeout(snapshotTimer)
   }, [activeProjectId, activeTool, globalProfilePresets, projects, projectsFolded])
+
+  // 디바운스 중에 프로젝트를 전환하거나 창을 닫아도 마지막 편집이 디스크에 남도록
+  // 대기 중인 저장을 ref에 보관하고, 전환/종료 시점에 flush한다.
+  const pendingProjectSaveRef = useRef<{ projectPath: string; state: ProjectPayload } | null>(null)
+
+  const flushPendingProjectSave = useCallback(() => {
+    const pendingSave = pendingProjectSaveRef.current
+
+    if (!pendingSave || !window.electronAPI?.saveProjectState) {
+      return
+    }
+
+    pendingProjectSaveRef.current = null
+    window.electronAPI.saveProjectState(pendingSave.projectPath, pendingSave.state).catch(() => {
+      setStatus({
+        kind: 'error',
+        message: '프로젝트 파일 저장에 실패했습니다.',
+      })
+    })
+  }, [])
 
   useEffect(() => {
     if (!projectPath || !window.electronAPI?.saveProjectState) {
@@ -1478,9 +1542,17 @@ function EtomoToolApp() {
     }
 
     setAutoSaveStatus('saving')
+    pendingProjectSaveRef.current = { projectPath, state: projectState }
     const saveTimer = window.setTimeout(() => {
+      const pendingSave = pendingProjectSaveRef.current
+
+      if (!pendingSave) {
+        return
+      }
+
+      pendingProjectSaveRef.current = null
       window.electronAPI
-        ?.saveProjectState(projectPath, projectState)
+        ?.saveProjectState(pendingSave.projectPath, pendingSave.state)
         .then(() => setAutoSaveStatus('saved'))
         .catch(() => {
           setAutoSaveStatus('error')
@@ -1495,7 +1567,42 @@ function EtomoToolApp() {
   }, [projectPath, projectState])
 
   useEffect(() => {
+    // 활성 프로젝트가 바뀌면(또는 언마운트되면) 이전 프로젝트의 대기 중인 저장을 즉시 실행한다.
+    return () => flushPendingProjectSave()
+  }, [flushPendingProjectSave, projectPath])
+
+  useEffect(() => {
+    const flushBeforeUnload = () => {
+      flushPendingProjectSave()
+      persistLocalSnapshotRef.current()
+    }
+
+    window.addEventListener('beforeunload', flushBeforeUnload)
+
+    return () => window.removeEventListener('beforeunload', flushBeforeUnload)
+  }, [flushPendingProjectSave])
+
+  useEffect(() => {
     setAutoSaveStatus('idle')
+  }, [activeProjectId])
+
+  useEffect(() => {
+    // 비활성 프로젝트의 base64 미리보기를 메모리에서 내려 세션 내 무한 누적을 막는다.
+    // 다시 전환하면 이미지 로드 effect가 디스크에서 다시 읽는다.
+    const activePrefix = `${activeProjectId}:`
+
+    setImagePreviews((current) => {
+      const keptEntries = Object.entries(current).filter(([key]) => key.startsWith(activePrefix))
+
+      return keptEntries.length === Object.keys(current).length
+        ? current
+        : Object.fromEntries(keptEntries)
+    })
+    setFailedImageKeys((current) => {
+      const keptKeys = [...current].filter((key) => key.startsWith(activePrefix))
+
+      return keptKeys.length === current.size ? current : new Set(keptKeys)
+    })
   }, [activeProjectId])
 
   useEffect(() => {
@@ -1514,16 +1621,13 @@ function EtomoToolApp() {
       electronAPI
         .syncCharacterFolders(projectPath, characterCodes)
         .then((result) => {
-          if (
-            cancelled ||
-            (result.createdFolders.length === 0 && result.removedFolders.length === 0)
-          ) {
+          if (cancelled || result.createdFolders.length === 0) {
             return
           }
 
           setStatus({
             kind: 'success',
-            message: `캐릭터 폴더를 동기화했습니다. 생성 ${result.createdFolders.length}개 / 삭제 ${result.removedFolders.length}개`,
+            message: `캐릭터 폴더를 동기화했습니다. 생성 ${result.createdFolders.length}개`,
           })
         })
         .catch(() => {
@@ -1820,11 +1924,6 @@ function EtomoToolApp() {
           message: `${characterCode} 캐릭터 코드는 추가했지만 폴더 생성에 실패했습니다.`,
         })
       })
-
-    setStatus({
-      kind: 'success',
-      message: `${characterCode} 캐릭터 코드를 추가했습니다.`,
-    })
   }
 
   function handleRemoveCharacterCode(characterCode: string) {

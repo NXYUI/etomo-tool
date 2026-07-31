@@ -645,13 +645,17 @@ ipcMain.handle('project:save-image-file', async (_event, payload) => {
   const relativePath = path.join(characterFolder, `${codeFileName}${extension}`)
   const absolutePath = ensureInsideProject(projectPath, path.join(projectPath, relativePath))
 
-  await fs.mkdir(path.dirname(absolutePath), { recursive: true })
-  await fs.writeFile(absolutePath, imageBuffer)
+  // Serialize through the per-project queue so rapid saves/deletes on the same
+  // slot cannot interleave and leave the preview and disk out of sync.
+  return enqueueProjectSave(projectPath, async () => {
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true })
+    await fs.writeFile(absolutePath, imageBuffer)
 
-  return {
-    absolutePath,
-    relativePath: relativePath.split(path.sep).join('/'),
-  }
+    return {
+      absolutePath,
+      relativePath: relativePath.split(path.sep).join('/'),
+    }
+  })
 })
 
 ipcMain.handle('project:ensure-character-folder', async (_event, payload) => {
@@ -848,15 +852,17 @@ ipcMain.handle('project:delete-image-file', async (_event, payload) => {
 
   const absolutePath = ensureInsideProject(projectPath, path.join(projectPath, relativePath))
 
-  try {
-    await fs.unlink(absolutePath)
-  } catch (error) {
-    if (!error || error.code !== 'ENOENT') {
-      throw error
+  return enqueueProjectSave(projectPath, async () => {
+    try {
+      await fs.unlink(absolutePath)
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') {
+        throw error
+      }
     }
-  }
 
-  return { ok: true }
+    return { ok: true }
+  })
 })
 
 app.whenReady().then(() => {
