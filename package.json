@@ -23,15 +23,11 @@
     "win": {
       "icon": "public/icon.ico",
       "target": [
-        "nsis"
+        "portable"
       ]
     },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "etomo-tool"
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
     },
     "files": [
       "dist/**/*",
