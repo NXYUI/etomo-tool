@@ -13,6 +13,7 @@ interface Window {
       path?: string
       state?: unknown
       characterFolders?: string[]
+      entryCount?: number
     }>
     exportProjectBackup: (payload: {
       projectId?: string

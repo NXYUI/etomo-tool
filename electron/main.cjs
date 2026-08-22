@@ -375,12 +375,21 @@ ipcMain.handle('project:select-folder', async () => {
   const projectPath = result.filePaths[0]
   const state = await readProjectState(projectPath)
   const characterFolders = await listCharacterFolders(projectPath)
+  let entryCount = 0
+
+  try {
+    const entries = await fs.readdir(projectPath)
+    entryCount = entries.filter((entry) => entry !== PROJECT_FILE_NAME).length
+  } catch {
+    entryCount = 0
+  }
 
   return {
     canceled: false,
     path: projectPath,
     state,
     characterFolders,
+    entryCount,
   }
 })
 

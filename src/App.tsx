@@ -14,9 +14,13 @@ import {
   Grid3X3,
   GripVertical,
   ImageUp,
+  Keyboard,
+  Palette,
   PanelTop,
   Plus,
+  RotateCcw,
   Save,
+  Settings,
   Table2,
   Trash2,
   WandSparkles,
@@ -54,6 +58,9 @@ interface CharacterAssets {
   slots: EmotionSlot[]
   profileFields: ProfileField[]
   profilePresetId?: string
+  profileImagePath?: string
+  profileImageName?: string
+  profileImagePrompt?: string
 }
 
 interface CompletionRule {
@@ -131,6 +138,19 @@ interface LocalSnapshot {
   globalProfilePresets: ProfilePreset[]
   activeTool?: ToolId
   projectsFolded?: boolean
+  theme?: string
+  hotkeys?: Record<string, string>
+}
+
+type HotkeyAction =
+  | 'prev-tool'
+  | 'next-tool'
+  | `goto-${ToolId}`
+
+interface ThemeOption {
+  id: string
+  label: string
+  preview: [string, string]
 }
 
 type ChatbotInput = Partial<ChatbotState> & {
@@ -172,7 +192,51 @@ interface AppErrorBoundaryState {
 }
 
 const STORAGE_KEY = 'etomo.localProjectState'
-const PROJECT_VERSION = 16
+const PROJECT_VERSION = 17
+const PROFILE_IMAGE_SLOT_KEY = '__profile__'
+const PROFILE_IMAGE_CODE = 'profile'
+const DEFAULT_THEME_ID = 'deep-teal'
+
+const THEME_OPTIONS: ThemeOption[] = [
+  { id: 'deep-teal', label: '딥 틸 (기본)', preview: ['#0c0f0e', '#2dd4bf'] },
+  { id: 'midnight-ink', label: '미드나이트 잉크', preview: ['#0b1020', '#5b8cff'] },
+  { id: 'slate-mono', label: '슬레이트 모노', preview: ['#101214', '#d7dde3'] },
+  { id: 'paper-light', label: '페이퍼 라이트', preview: ['#f7f5ef', '#1f7a5c'] },
+  { id: 'arctic-day', label: '아틱 데이', preview: ['#eef4f9', '#2c7fb8'] },
+  { id: 'sakura', label: '사쿠라', preview: ['#fdf2f5', '#e05c8a'] },
+  { id: 'coffee-house', label: '커피 하우스', preview: ['#f4ede2', '#7a4a2b'] },
+  { id: 'sepia-archive', label: '세피아 아카이브', preview: ['#efe6d4', '#8a6a3b'] },
+  { id: 'forest-cabin', label: '포레스트 캐빈', preview: ['#131a13', '#8aa85e'] },
+  { id: 'deep-sea', label: '딥 씨', preview: ['#06121e', '#3ec6c0'] },
+  { id: 'lavender-dusk', label: '라벤더 더스크', preview: ['#17131f', '#b79ae6'] },
+  { id: 'royal-velvet', label: '로열 벨벳', preview: ['#160f22', '#d4af5a'] },
+  { id: 'blood-moon', label: '블러드 문', preview: ['#0d0808', '#e04352'] },
+  { id: 'cyberpunk', label: '사이버펑크', preview: ['#0d0716', '#ff3ea5'] },
+  { id: 'terminal', label: '터미널', preview: ['#050a05', '#2fe06b'] },
+  { id: 'noir', label: '누아르', preview: ['#0c0c0c', '#e8e2d6'] },
+]
+
+const HOTKEY_ACTION_LABELS: Array<{ action: HotkeyAction; label: string }> = [
+  { action: 'prev-tool', label: '위 서브앱으로 이동' },
+  { action: 'next-tool', label: '아래 서브앱으로 이동' },
+  { action: 'goto-overview', label: '전체 정리로 이동' },
+  { action: 'goto-editor', label: '프롬프트로 이동' },
+  { action: 'goto-profile', label: '챗봇 시트로 이동' },
+  { action: 'goto-images', label: '이미지 코드로 이동' },
+  { action: 'goto-lorebook', label: '로어북으로 이동' },
+  { action: 'goto-guidelines', label: '유저 가이드라인으로 이동' },
+]
+
+const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
+  'prev-tool': 'Ctrl+ArrowUp',
+  'next-tool': 'Ctrl+ArrowDown',
+  'goto-overview': 'Ctrl+1',
+  'goto-editor': 'Ctrl+2',
+  'goto-profile': 'Ctrl+3',
+  'goto-images': 'Ctrl+4',
+  'goto-lorebook': 'Ctrl+5',
+  'goto-guidelines': 'Ctrl+6',
+}
 const PROMPT_FONT_DEFAULT_SIZE = 14
 const PROMPT_FONT_MIN_SIZE = 11
 const PROMPT_FONT_MAX_SIZE = 24
@@ -279,6 +343,8 @@ const APP_GUIDELINE_SECTIONS = [
       '이미지 코드는 KEY=VALUE 형식만 인식합니다. 형식에 맞지 않는 줄은 무시됩니다.',
       '예: 평상시=001, 웃음=002',
       'VALUE에 쉼표가 있으면 각 값이 별도 카드로 분리됩니다. 예: 식사=16,17,18',
+      '적용을 누르면 이미지 코드가 프로젝트의 모든 캐릭터에 공통 적용됩니다.',
+      '캐릭터마다 이미 등록해 둔 이미지는 코드가 같으면 그대로 유지됩니다.',
       '이미지를 등록하면 선택한 캐릭터 코드 폴더 안에 상태 코드 파일명으로 저장됩니다.',
     ],
   },
@@ -307,6 +373,16 @@ const APP_GUIDELINE_SECTIONS = [
       '전체 백업은 열려 있는 프로젝트와 전역 프리셋을 함께 저장합니다.',
       '가져오기는 기존 프로젝트에 병합하거나 덮어쓰지 않고 새 프로젝트로만 복원합니다.',
       '중요한 작업 전에는 프로젝트 폴더 자체도 별도로 복사해 두는 편이 좋습니다.',
+    ],
+  },
+  {
+    title: '설정 (테마 / 단축키)',
+    items: [
+      '상단 오른쪽의 톱니 버튼으로 설정 창을 엽니다.',
+      '테마는 색상뿐 아니라 분위기/장르 컨셉의 16종 중에서 고를 수 있습니다.',
+      '서브앱 이동 단축키는 기본값이 Ctrl+↑/↓(순환), Ctrl+1~6(직접 이동)입니다.',
+      '설정 창에서 입력칸을 클릭한 뒤 원하는 키 조합을 눌러 단축키를 바꿀 수 있습니다.',
+      '테마와 단축키 설정은 이 컴퓨터의 앱 설정으로 저장되며 프로젝트 파일과는 무관합니다.',
     ],
   },
 ]
@@ -637,6 +713,8 @@ function createInitialSnapshot(): LocalSnapshot {
     globalProfilePresets: [],
     activeTool: 'profile',
     projectsFolded: false,
+    theme: DEFAULT_THEME_ID,
+    hotkeys: { ...DEFAULT_HOTKEYS },
   }
 }
 
@@ -657,6 +735,60 @@ function createProjectPayload(chatbot: ChatbotState): ProjectPayload {
 
 function normalizeTokenProvider(value: unknown): TokenProvider {
   return value === 'gemini' ? 'gemini' : 'claude'
+}
+
+function normalizeThemeId(value: unknown): string {
+  return typeof value === 'string' && THEME_OPTIONS.some((theme) => theme.id === value)
+    ? value
+    : DEFAULT_THEME_ID
+}
+
+function normalizeHotkeys(value: unknown): Record<HotkeyAction, string> {
+  const hotkeys = { ...DEFAULT_HOTKEYS }
+
+  if (!value || typeof value !== 'object') {
+    return hotkeys
+  }
+
+  for (const { action } of HOTKEY_ACTION_LABELS) {
+    const combo = (value as Record<string, unknown>)[action]
+
+    if (typeof combo === 'string') {
+      hotkeys[action] = combo
+    }
+  }
+
+  return hotkeys
+}
+
+function getComboFromKeyboardEvent(event: {
+  key: string
+  ctrlKey: boolean
+  altKey: boolean
+  shiftKey: boolean
+  metaKey: boolean
+}): string | null {
+  const key = event.key
+
+  if (key === 'Control' || key === 'Alt' || key === 'Shift' || key === 'Meta') {
+    return null
+  }
+
+  const normalizedKey =
+    key === ' ' ? 'Space' : key.length === 1 ? key.toUpperCase() : key
+  const parts = [
+    event.ctrlKey ? 'Ctrl' : '',
+    event.altKey ? 'Alt' : '',
+    event.shiftKey ? 'Shift' : '',
+    event.metaKey ? 'Meta' : '',
+    normalizedKey,
+  ].filter(Boolean)
+
+  return parts.join('+')
+}
+
+function comboHasModifier(combo: string) {
+  return /(?:^|\+)(?:Ctrl|Alt|Meta)\+/.test(`${combo}+`)
 }
 
 function normalizeSlot(input: Partial<EmotionSlot> | null | undefined, fallbackIndex: number): EmotionSlot {
@@ -718,15 +850,29 @@ function normalizeCharacterAssets(input: unknown, fallbackIndex: number): Charac
     return null
   }
 
-  return createCharacterAssets(
-    code,
-    Array.isArray(maybeCharacter.slots)
-      ? maybeCharacter.slots.map((slot, index) => normalizeSlot(slot, index))
-      : [],
-    normalizeProfileFields(maybeCharacter),
-    typeof maybeCharacter.profilePresetId === 'string' ? maybeCharacter.profilePresetId : undefined,
-    typeof maybeCharacter.displayName === 'string' ? maybeCharacter.displayName : '',
-  )
+  return {
+    ...createCharacterAssets(
+      code,
+      Array.isArray(maybeCharacter.slots)
+        ? maybeCharacter.slots.map((slot, index) => normalizeSlot(slot, index))
+        : [],
+      normalizeProfileFields(maybeCharacter),
+      typeof maybeCharacter.profilePresetId === 'string' ? maybeCharacter.profilePresetId : undefined,
+      typeof maybeCharacter.displayName === 'string' ? maybeCharacter.displayName : '',
+    ),
+    profileImagePath:
+      typeof maybeCharacter.profileImagePath === 'string'
+        ? maybeCharacter.profileImagePath
+        : undefined,
+    profileImageName:
+      typeof maybeCharacter.profileImageName === 'string'
+        ? maybeCharacter.profileImageName
+        : undefined,
+    profileImagePrompt:
+      typeof maybeCharacter.profileImagePrompt === 'string'
+        ? maybeCharacter.profileImagePrompt
+        : '',
+  }
 }
 
 function normalizeProfileFields(input: { profileFields?: unknown }) {
@@ -1093,6 +1239,8 @@ function loadLocalSnapshot(): LocalSnapshot {
               ? parsedSnapshot.activeTool
               : 'profile',
           projectsFolded: Boolean(parsedSnapshot.projectsFolded),
+          theme: normalizeThemeId(parsedSnapshot.theme),
+          hotkeys: normalizeHotkeys(parsedSnapshot.hotkeys),
         }
       }
     }
@@ -1116,6 +1264,8 @@ function loadLocalSnapshot(): LocalSnapshot {
       globalProfilePresets,
       activeTool: 'profile',
       projectsFolded: false,
+      theme: DEFAULT_THEME_ID,
+      hotkeys: { ...DEFAULT_HOTKEYS },
     }
   } catch {
     return createInitialSnapshot()
@@ -1377,6 +1527,11 @@ function EtomoToolApp() {
   const [activeProjectId, setActiveProjectId] = useState(initialSnapshot.activeProjectId)
   const [activeTool, setActiveTool] = useState<ToolId>(initialSnapshot.activeTool ?? 'profile')
   const [projectsFolded, setProjectsFolded] = useState(Boolean(initialSnapshot.projectsFolded))
+  const [theme, setTheme] = useState(() => normalizeThemeId(initialSnapshot.theme))
+  const [hotkeys, setHotkeys] = useState<Record<HotkeyAction, string>>(() =>
+    normalizeHotkeys(initialSnapshot.hotkeys),
+  )
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [imagePreviews, setImagePreviews] = useState<Record<string, string>>({})
   const [failedImageKeys, setFailedImageKeys] = useState<Set<string>>(() => new Set())
   const [savingSlotId, setSavingSlotId] = useState<string | null>(null)
@@ -1426,6 +1581,63 @@ function EtomoToolApp() {
 
     return () => window.clearTimeout(dashboardTimer)
   }, [isDashboardVisible])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+  }, [theme])
+
+  useEffect(() => {
+    const handleHotkey = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || isSettingsOpen) {
+        return
+      }
+
+      const combo = getComboFromKeyboardEvent(event)
+
+      if (!combo) {
+        return
+      }
+
+      const matchedAction = HOTKEY_ACTION_LABELS.find(
+        ({ action }) => hotkeys[action] === combo,
+      )?.action
+
+      if (!matchedAction) {
+        return
+      }
+
+      // 수식키 없는 단축키는 입력 중에 오발동하지 않도록 편집 요소에서는 무시한다.
+      const target = event.target as HTMLElement | null
+      const isEditableTarget =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        Boolean(target?.isContentEditable)
+
+      if (isEditableTarget && !comboHasModifier(combo)) {
+        return
+      }
+
+      event.preventDefault()
+
+      if (matchedAction === 'prev-tool' || matchedAction === 'next-tool') {
+        setActiveTool((currentTool) => {
+          const currentIndex = TOOL_ITEMS.findIndex((tool) => tool.id === currentTool)
+          const offset = matchedAction === 'prev-tool' ? -1 : 1
+          const nextIndex =
+            (currentIndex + offset + TOOL_ITEMS.length) % TOOL_ITEMS.length
+
+          return TOOL_ITEMS[nextIndex].id
+        })
+        return
+      }
+
+      setActiveTool(matchedAction.slice('goto-'.length) as ToolId)
+    }
+
+    window.addEventListener('keydown', handleHotkey)
+
+    return () => window.removeEventListener('keydown', handleHotkey)
+  }, [hotkeys, isSettingsOpen])
 
   useEffect(() => {
     setLoreCardWidthText(String(chatbot.loreCardWidth))
@@ -1503,6 +1715,8 @@ function EtomoToolApp() {
             chatbot: getPersistedChatbot(project.chatbot),
           })),
           globalProfilePresets,
+          theme,
+          hotkeys,
         }),
       )
     } catch (error) {
@@ -1514,7 +1728,7 @@ function EtomoToolApp() {
     const snapshotTimer = window.setTimeout(() => persistLocalSnapshotRef.current(), 500)
 
     return () => window.clearTimeout(snapshotTimer)
-  }, [activeProjectId, activeTool, globalProfilePresets, projects, projectsFolded])
+  }, [activeProjectId, activeTool, globalProfilePresets, hotkeys, projects, projectsFolded, theme])
 
   // 디바운스 중에 프로젝트를 전환하거나 창을 닫아도 마지막 편집이 디스크에 남도록
   // 대기 중인 저장을 ref에 보관하고, 전환/종료 시점에 flush한다.
@@ -1687,6 +1901,22 @@ function EtomoToolApp() {
         key: previewKey(activeProject.id, activeCharacterCode, getSlotKey(slot)),
         relativePath: slot.imagePath ?? '',
       }))
+    const profileImageKey = previewKey(
+      activeProject.id,
+      activeCharacterCode,
+      PROFILE_IMAGE_SLOT_KEY,
+    )
+
+    if (
+      activeCharacter?.profileImagePath &&
+      !imagePreviews[profileImageKey] &&
+      !failedImageKeys.has(profileImageKey)
+    ) {
+      missingImages.push({
+        key: profileImageKey,
+        relativePath: activeCharacter.profileImagePath,
+      })
+    }
 
     if (missingImages.length === 0) {
       return undefined
@@ -1750,6 +1980,7 @@ function EtomoToolApp() {
       cancelled = true
     }
   }, [
+    activeCharacter?.profileImagePath,
     activeCharacterCode,
     activeCharacterSlots,
     activeProject.id,
@@ -1835,6 +2066,19 @@ function EtomoToolApp() {
     }))
   }
 
+  function updateActiveCharacter(updater: (character: CharacterAssets) => CharacterAssets) {
+    if (!activeCharacterCode) {
+      return
+    }
+
+    updateChatbot((chatbot) => ({
+      ...chatbot,
+      characters: chatbot.characters.map((character) =>
+        character.code === activeCharacterCode ? updater(character) : character,
+      ),
+    }))
+  }
+
   function updateActiveCharacterProfileFields(
     updater: (profileFields: ProfileField[]) => ProfileField[],
   ) {
@@ -1890,7 +2134,14 @@ function EtomoToolApp() {
     updateChatbot((chatbot) => ({
       ...chatbot,
       activeCharacterCode: characterCode,
-      characters: [...chatbot.characters, createCharacterAssets(characterCode)],
+      characters: [
+        ...chatbot.characters,
+        // 새 캐릭터는 현재 이미지 코드 기준으로 격자를 미리 생성해 준다.
+        createCharacterAssets(
+          characterCode,
+          parseCodeText(chatbot.codeText).map(({ label, code }) => createSlot(label, code)),
+        ),
+      ],
     }))
     setNewCharacterCode('')
 
@@ -2028,6 +2279,10 @@ function EtomoToolApp() {
           ...character,
           code: nextCode,
           displayName: nextDisplayName,
+          profileImagePath:
+            isCodeChanged && character.profileImagePath?.startsWith(`${previousCode}/`)
+              ? `${nextCode}/${character.profileImagePath.slice(previousCode.length + 1)}`
+              : character.profileImagePath,
           slots: character.slots.map((slot) => ({
             ...slot,
             imagePath:
@@ -2476,6 +2731,29 @@ function EtomoToolApp() {
 
       const loadedProject = normalizeProjectPayload(result.state)
       const selectedPath = result.path
+
+      // etomo 프로젝트가 아닌데 내용물이 있는 폴더는 이미지 등록/삭제 과정에서
+      // 기존 파일이 덮어써지거나 지워질 수 있으므로 명시적으로 확인받는다.
+      if (!loadedProject && (result.entryCount ?? 0) > 0) {
+        const proceedWithExistingFolder = window.confirm(
+          `선택한 폴더는 etomo-tool 프로젝트가 아니지만 파일/폴더 ${result.entryCount}개가 이미 들어 있습니다.\n\n` +
+            '이 폴더를 프로젝트 폴더로 지정하면:\n' +
+            '- 하위 폴더가 캐릭터 폴더로 인식됩니다.\n' +
+            '- 이미지 등록/삭제 시 같은 이름의 기존 파일이 덮어써지거나 삭제될 수 있습니다.\n' +
+            '- 캐릭터 코드를 삭제하면 해당 폴더 전체가 삭제됩니다.\n\n' +
+            '데이터 보호를 위해 새 빈 폴더를 만들어 지정하는 방식을 권장합니다.\n' +
+            '그래도 이 폴더를 사용하시겠습니까?',
+        )
+
+        if (!proceedWithExistingFolder) {
+          setStatus({
+            kind: 'info',
+            message: '프로젝트 폴더 지정을 취소했습니다. 새 빈 폴더를 만들어 지정하는 방식을 권장합니다.',
+          })
+          return
+        }
+      }
+
       const selectedComparablePath = getComparableProjectPath(selectedPath)
       const existingProject = projects.find(
         (project) => getComparableProjectPath(project.projectPath) === selectedComparablePath,
@@ -2588,6 +2866,39 @@ function EtomoToolApp() {
         return
       }
 
+      // 다른 프로젝트의 저장 파일을 현재 챗봇 내용으로 덮어쓰기 전에 반드시 확인받는다.
+      if (result.state) {
+        const proceedWithOverwrite = window.confirm(
+          '선택한 폴더에는 이미 다른 etomo-tool 프로젝트 저장 파일(etomo.project.json)이 있습니다.\n\n' +
+            '이 폴더를 저장 폴더로 지정하면 기존 저장 파일이 현재 챗봇 내용으로 덮어써지고,\n' +
+            '해당 폴더에 저장돼 있던 작업 내용(시트, 프롬프트, 로어북 등)은 복구할 수 없습니다.\n\n' +
+            '정말 덮어쓰시겠습니까?',
+        )
+
+        if (!proceedWithOverwrite) {
+          setStatus({
+            kind: 'info',
+            message: '저장 폴더 변경을 취소했습니다.',
+          })
+          return
+        }
+      } else if ((result.entryCount ?? 0) > 0) {
+        const proceedWithExistingFolder = window.confirm(
+          `선택한 폴더에 파일/폴더 ${result.entryCount}개가 이미 들어 있습니다.\n\n` +
+            '이미지 등록/삭제 시 같은 이름의 기존 파일이 덮어써지거나 삭제될 수 있습니다.\n' +
+            '새 빈 폴더를 만들어 지정하는 방식을 권장합니다.\n\n' +
+            '그래도 이 폴더를 사용하시겠습니까?',
+        )
+
+        if (!proceedWithExistingFolder) {
+          setStatus({
+            kind: 'info',
+            message: '저장 폴더 변경을 취소했습니다.',
+          })
+          return
+        }
+      }
+
       updateActiveProject((project) => ({
         ...project,
         projectPath: selectedPath,
@@ -2655,16 +2966,26 @@ function EtomoToolApp() {
       return
     }
 
-    updateActiveCharacterSlots((slots) => {
-      const previousSlotsByCode = new Map(slots.map((slot) => [getSlotKey(slot), slot]))
+    // 이미지 코드는 프로젝트의 모든 캐릭터에 공통 적용한다.
+    // 캐릭터별로 이미 등록된 이미지는 코드가 같으면 그대로 유지된다.
+    updateChatbot((chatbot) => ({
+      ...chatbot,
+      characters: chatbot.characters.map((character) => {
+        const previousSlotsByCode = new Map(
+          character.slots.map((slot) => [getSlotKey(slot), slot]),
+        )
 
-      return parsedItems.map(({ label, code }) =>
-        createSlot(label, code, previousSlotsByCode.get(code)),
-      )
-    })
+        return {
+          ...character,
+          slots: parsedItems.map(({ label, code }) =>
+            createSlot(label, code, previousSlotsByCode.get(code)),
+          ),
+        }
+      }),
+    }))
     setStatus({
       kind: 'success',
-      message: `${parsedItems.length}개의 이미지 코드 항목을 적용했습니다.`,
+      message: `${parsedItems.length}개의 이미지 코드 항목을 전체 캐릭터 ${chatbot.characters.length}명에게 적용했습니다.`,
     })
   }
 
@@ -2802,6 +3123,172 @@ function EtomoToolApp() {
     } finally {
       setDeletingSlotId(null)
       setDeleteTargetSlotKey(null)
+    }
+  }
+
+  async function saveProfileImage(file: File) {
+    if (!projectPath || !window.electronAPI?.saveImageFile) {
+      setStatus({
+        kind: 'error',
+        message: '프로필 이미지를 저장하려면 먼저 프로젝트 폴더를 지정해야 합니다.',
+      })
+      return
+    }
+
+    if (!activeCharacterCode || hasInvalidActiveCharacterCode) {
+      setStatus({
+        kind: 'error',
+        message: '프로필 이미지를 저장하려면 유효한 캐릭터 코드가 필요합니다.',
+      })
+      return
+    }
+
+    const targetCharacterCode = activeCharacterCode
+    const profileKey = previewKey(activeProject.id, targetCharacterCode, PROFILE_IMAGE_SLOT_KEY)
+
+    try {
+      setSavingSlotId(PROFILE_IMAGE_SLOT_KEY)
+      const dataUrl = await fileToDataUrl(file)
+      const result = await window.electronAPI.saveImageFile({
+        projectPath,
+        characterCode: targetCharacterCode,
+        code: PROFILE_IMAGE_CODE,
+        fileName: file.name,
+        dataUrl,
+      })
+
+      setImagePreviews((currentPreviews) => ({
+        ...currentPreviews,
+        [profileKey]: dataUrl,
+      }))
+      setFailedImageKeys((current) => {
+        const nextFailedKeys = new Set(current)
+        nextFailedKeys.delete(profileKey)
+        return nextFailedKeys
+      })
+      updateActiveCharacter((character) => ({
+        ...character,
+        profileImagePath: result.relativePath,
+        profileImageName: file.name,
+      }))
+      setStatus({
+        kind: 'success',
+        message: `${targetCharacterCode} 캐릭터의 프로필 이미지를 저장했습니다.`,
+      })
+    } catch {
+      setStatus({
+        kind: 'error',
+        message: '프로필 이미지 저장에 실패했습니다.',
+      })
+    } finally {
+      setSavingSlotId(null)
+    }
+  }
+
+  async function deleteProfileImage() {
+    const targetCharacter = activeCharacter
+
+    if (!targetCharacter) {
+      return
+    }
+
+    const profileKey = previewKey(activeProject.id, targetCharacter.code, PROFILE_IMAGE_SLOT_KEY)
+    const clearProfileImage = () => {
+      setImagePreviews((currentPreviews) => {
+        const nextPreviews = { ...currentPreviews }
+        delete nextPreviews[profileKey]
+        return nextPreviews
+      })
+      setFailedImageKeys((current) => {
+        const nextFailedKeys = new Set(current)
+        nextFailedKeys.delete(profileKey)
+        return nextFailedKeys
+      })
+      updateActiveCharacter((character) => ({
+        ...character,
+        profileImagePath: undefined,
+        profileImageName: undefined,
+      }))
+    }
+
+    if (!targetCharacter.profileImagePath) {
+      clearProfileImage()
+      return
+    }
+
+    if (!projectPath || !window.electronAPI?.deleteImageFile) {
+      setStatus({
+        kind: 'error',
+        message: '프로필 이미지를 삭제하려면 먼저 프로젝트 폴더를 지정해야 합니다.',
+      })
+      return
+    }
+
+    try {
+      await window.electronAPI.deleteImageFile(projectPath, targetCharacter.profileImagePath)
+      clearProfileImage()
+      setStatus({
+        kind: 'success',
+        message: `${targetCharacter.code} 캐릭터의 프로필 이미지를 삭제했습니다.`,
+      })
+    } catch {
+      setStatus({
+        kind: 'error',
+        message: '프로필 이미지 삭제에 실패했습니다.',
+      })
+    }
+  }
+
+  function handleProfileImageDrop(event: DragEvent<HTMLElement>) {
+    event.preventDefault()
+    const file = pickImageFile(event.dataTransfer.files)
+
+    if (file) {
+      void saveProfileImage(file)
+    }
+  }
+
+  function handleProfileImagePaste(event: ClipboardEvent<HTMLElement>) {
+    const file = pickClipboardImage(event)
+
+    if (file) {
+      event.preventDefault()
+      void saveProfileImage(file)
+    }
+  }
+
+  function handleProfileImageFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = pickImageFile(event.target.files ?? [])
+
+    if (file) {
+      void saveProfileImage(file)
+    }
+
+    event.currentTarget.value = ''
+  }
+
+  async function handleCopyProfileImagePrompt() {
+    const prompt = activeCharacter?.profileImagePrompt?.trim()
+
+    if (!prompt) {
+      setStatus({
+        kind: 'warning',
+        message: '복사할 이미지 생성 프롬프트가 없습니다.',
+      })
+      return
+    }
+
+    try {
+      await copyTextToClipboard(prompt)
+      setStatus({
+        kind: 'success',
+        message: '이미지 생성 프롬프트를 클립보드에 복사했습니다.',
+      })
+    } catch {
+      setStatus({
+        kind: 'error',
+        message: '이미지 생성 프롬프트 복사에 실패했습니다.',
+      })
     }
   }
 
@@ -4487,6 +4974,15 @@ function EtomoToolApp() {
   }
 
   function renderProfileTool() {
+    const profileImageKey = previewKey(
+      activeProject.id,
+      activeCharacterCode,
+      PROFILE_IMAGE_SLOT_KEY,
+    )
+    const profileImagePreview = activeCharacter?.profileImagePath
+      ? imagePreviews[profileImageKey]
+      : undefined
+
     return (
       <div className="profile-sheet-content">
         <div className="section-heading">
@@ -4524,6 +5020,75 @@ function EtomoToolApp() {
             <Plus size={16} aria-hidden="true" />
           </button>
         </div>
+
+        {activeCharacterCode && (
+          <div className="profile-visual-panel" aria-label="캐릭터 프로필 이미지와 생성 프롬프트">
+            <div
+              className={profileImagePreview ? 'profile-image-box has-image' : 'profile-image-box'}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={handleProfileImageDrop}
+              onPaste={handleProfileImagePaste}
+              tabIndex={0}
+            >
+              {profileImagePreview ? (
+                <img src={profileImagePreview} alt={`${getCharacterDisplayLabel(activeCharacter!)} 프로필 이미지`} />
+              ) : (
+                <div className="empty-image">
+                  <ClipboardPaste size={22} aria-hidden="true" />
+                  <span>Drop / Paste</span>
+                </div>
+              )}
+              <div className="profile-image-actions">
+                <label className="icon-button attach-button" title="프로필 이미지 첨부">
+                  <ImageUp size={16} aria-hidden="true" />
+                  <input accept="image/*" type="file" onChange={handleProfileImageFileChange} />
+                </label>
+                {activeCharacter?.profileImagePath && (
+                  <button
+                    className="icon-button danger"
+                    type="button"
+                    onClick={() => void deleteProfileImage()}
+                    title="프로필 이미지 삭제"
+                  >
+                    <Trash2 size={15} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+              {savingSlotId === PROFILE_IMAGE_SLOT_KEY && <p className="slot-saving">저장 중</p>}
+            </div>
+            <div className="profile-image-side">
+              <label className="profile-image-prompt-field">
+                <span>이미지 생성 프롬프트</span>
+                <textarea
+                  aria-label="프로필 이미지 생성 프롬프트"
+                  placeholder="이 캐릭터의 프로필 이미지를 생성할 때 쓸 프롬프트를 기록해 두세요."
+                  value={activeCharacter?.profileImagePrompt ?? ''}
+                  onChange={(event) => {
+                    const profileImagePrompt = event.currentTarget.value
+                    updateActiveCharacter((character) => ({ ...character, profileImagePrompt }))
+                  }}
+                />
+              </label>
+              <div className="profile-image-meta">
+                <span>
+                  {activeCharacter?.profileImageName
+                    ? `등록됨: ${activeCharacter.profileImageName}`
+                    : '등록된 프로필 이미지가 없습니다.'}
+                </span>
+                <button
+                  className="icon-text-button"
+                  type="button"
+                  onClick={() => void handleCopyProfileImagePrompt()}
+                  disabled={!activeCharacter?.profileImagePrompt?.trim()}
+                  title="이미지 생성 프롬프트 복사"
+                >
+                  <ClipboardList size={14} aria-hidden="true" />
+                  프롬프트 복사
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {!activeCharacterCode ? (
           <div className="empty-tool-state">
@@ -4723,6 +5288,16 @@ function EtomoToolApp() {
           </span>
         </div>
 
+        <button
+          className="icon-button topbar-settings-button"
+          type="button"
+          onClick={() => setIsSettingsOpen(true)}
+          title="설정 (테마 / 단축키)"
+          aria-label="설정 열기"
+        >
+          <Settings size={17} aria-hidden="true" />
+        </button>
+
         <div className={`save-state ${autoSaveStatus}`}>
           <Save size={15} aria-hidden="true" />
           {autoSaveStatus === 'saving'
@@ -4898,6 +5473,132 @@ function EtomoToolApp() {
           </section>
         )}
       </main>
+
+      {isSettingsOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setIsSettingsOpen(false)
+            }
+          }}
+        >
+          <section
+            className="confirm-modal settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
+          >
+            <div className="settings-header">
+              <Settings size={18} aria-hidden="true" />
+              <h2 id="settings-title">설정</h2>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => setIsSettingsOpen(false)}
+                title="설정 닫기"
+              >
+                <X size={16} aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="settings-section">
+              <div className="subsection-heading">
+                <Palette size={16} aria-hidden="true" />
+                <h3>테마</h3>
+              </div>
+              <div className="theme-grid" role="listbox" aria-label="테마 선택">
+                {THEME_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    role="option"
+                    aria-selected={theme === option.id}
+                    className={theme === option.id ? 'theme-swatch active' : 'theme-swatch'}
+                    type="button"
+                    onClick={() => setTheme(option.id)}
+                  >
+                    <span
+                      className="theme-swatch-preview"
+                      style={{ background: option.preview[0] }}
+                      aria-hidden="true"
+                    >
+                      <span style={{ background: option.preview[1] }} />
+                    </span>
+                    <span className="theme-swatch-label">{option.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-section">
+              <div className="subsection-heading">
+                <Keyboard size={16} aria-hidden="true" />
+                <h3>단축키</h3>
+                <button
+                  className="icon-text-button"
+                  type="button"
+                  onClick={() => setHotkeys({ ...DEFAULT_HOTKEYS })}
+                  title="단축키 기본값 복원"
+                >
+                  <RotateCcw size={14} aria-hidden="true" />
+                  기본값
+                </button>
+              </div>
+              <div className="hotkey-list">
+                {HOTKEY_ACTION_LABELS.map(({ action, label }) => (
+                  <div className="hotkey-row" key={action}>
+                    <span>{label}</span>
+                    <input
+                      aria-label={`${label} 단축키`}
+                      placeholder="키 조합 입력"
+                      readOnly
+                      value={hotkeys[action] ?? ''}
+                      onKeyDown={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+
+                        if (event.key === 'Escape' || event.key === 'Tab') {
+                          return
+                        }
+
+                        if (event.key === 'Backspace' || event.key === 'Delete') {
+                          setHotkeys((currentHotkeys) => ({ ...currentHotkeys, [action]: '' }))
+                          return
+                        }
+
+                        const combo = getComboFromKeyboardEvent(event)
+
+                        if (!combo) {
+                          return
+                        }
+
+                        setHotkeys((currentHotkeys) => {
+                          const nextHotkeys = { ...currentHotkeys }
+
+                          // 같은 조합이 다른 동작에 있으면 해제해 충돌을 막는다.
+                          for (const { action: otherAction } of HOTKEY_ACTION_LABELS) {
+                            if (otherAction !== action && nextHotkeys[otherAction] === combo) {
+                              nextHotkeys[otherAction] = ''
+                            }
+                          }
+
+                          nextHotkeys[action] = combo
+                          return nextHotkeys
+                        })
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+              <p className="hotkey-hint">
+                입력칸을 클릭한 뒤 원하는 키 조합을 누르세요. Backspace로 해제할 수 있습니다.
+                수식키(Ctrl/Alt) 없는 단축키는 텍스트 입력 중에는 동작하지 않습니다.
+              </p>
+            </div>
+          </section>
+        </div>
+      )}
 
       {promptCloseTargetTab && (
         <div
