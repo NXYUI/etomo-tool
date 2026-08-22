@@ -5,6 +5,19 @@
     <link rel="icon" href="/icon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>etomo-tool</title>
+    <script>
+      // 저장된 테마를 첫 페인트 전에 적용해 기본 테마가 번쩍이는 것을 막는다.
+      try {
+        var savedSnapshot = JSON.parse(
+          localStorage.getItem('etomo.localProjectState') || '{}',
+        )
+        if (savedSnapshot && typeof savedSnapshot.theme === 'string') {
+          document.documentElement.dataset.theme = savedSnapshot.theme
+        }
+      } catch (error) {
+        // 스냅샷을 읽지 못하면 기본 테마로 시작한다.
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

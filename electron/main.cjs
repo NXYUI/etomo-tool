@@ -441,16 +441,20 @@ ipcMain.handle('backup:export-project', async (_event, payload) => {
 
   const backupFilePath = path.resolve(result.filePath)
   const zip = new AdmZip()
-  const { manifestProject, fileCount } = await addProjectBackupEntry(
-    zip,
-    {
-      id: payload.projectId,
-      projectPath,
-      projectName: payload.projectName || path.basename(projectPath),
-      state: payload.state,
-    },
-    0,
-    backupFilePath,
+  // Read project files through the per-project queue so a backup cannot
+  // capture a half-written image or project file.
+  const { manifestProject, fileCount } = await enqueueProjectSave(projectPath, () =>
+    addProjectBackupEntry(
+      zip,
+      {
+        id: payload.projectId,
+        projectPath,
+        projectName: payload.projectName || path.basename(projectPath),
+        state: payload.state,
+      },
+      0,
+      backupFilePath,
+    ),
   )
   const manifest = {
     format: BACKUP_FORMAT,
@@ -508,7 +512,15 @@ ipcMain.handle('backup:export-workspace', async (_event, payload) => {
   let fileCount = 0
 
   for (const [index, project] of projects.entries()) {
-    const entry = await addProjectBackupEntry(zip, project, index, backupFilePath)
+    const entryProjectPath =
+      typeof project.projectPath === 'string' && project.projectPath.trim()
+        ? normalizeProjectPath(project.projectPath)
+        : ''
+    const entry = entryProjectPath
+      ? await enqueueProjectSave(entryProjectPath, () =>
+          addProjectBackupEntry(zip, project, index, backupFilePath),
+        )
+      : await addProjectBackupEntry(zip, project, index, backupFilePath)
     manifestProjects.push(entry.manifestProject)
     fileCount += entry.fileCount
   }
@@ -799,7 +811,15 @@ ipcMain.handle('project:rename-character-folder', async (_event, payload) => {
     )
 
     await fs.rename(previousPath, temporaryPath)
-    await fs.rename(temporaryPath, nextPath)
+
+    try {
+      await fs.rename(temporaryPath, nextPath)
+    } catch (error) {
+      // Roll back so the character's images are never stranded in the
+      // hidden temp folder when the second rename fails.
+      await fs.rename(temporaryPath, previousPath)
+      throw error
+    }
   } else {
     try {
       await fs.access(nextPath)
@@ -933,7 +953,23 @@ ipcMain.handle('fonts:delete', async (_event, payload) => {
   const fileName = ensureSafeFontFileName(payload.fileName)
   const fontPath = path.join(getFontsDirectory(), fileName)
 
-  await fs.rm(fontPath, { force: true })
+  try {
+    await fs.access(fontPath)
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return { ok: true }
+    }
+
+    throw error
+  }
+
+  // Match the rest of the app: prefer the trash, fall back to plain removal
+  // for the app-managed font copy.
+  try {
+    await shell.trashItem(fontPath)
+  } catch {
+    await fs.rm(fontPath, { force: true })
+  }
 
   return { ok: true }
 })
@@ -991,6 +1027,29 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow()
     }
+  })
+})
+
+// Don't let the process exit while a project/image write is still in flight —
+// the renderer's beforeunload flush is fire-and-forget, so the final debounce
+// window of edits would otherwise be lost on quit.
+let quitAfterPendingSaves = false
+
+app.on('before-quit', (event) => {
+  if (quitAfterPendingSaves) {
+    return
+  }
+
+  const pendingSaves = [...projectSaveQueues.values()]
+
+  if (pendingSaves.length === 0) {
+    return
+  }
+
+  event.preventDefault()
+  quitAfterPendingSaves = true
+  Promise.allSettled(pendingSaves).finally(() => {
+    app.quit()
   })
 })
 

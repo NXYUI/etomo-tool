@@ -149,6 +149,7 @@ interface LocalSnapshot {
   hotkeys?: Record<string, string>
   customFonts?: CustomFont[]
   activeFontId?: string
+  recoveredFromError?: boolean
 }
 
 type HotkeyAction =
@@ -792,19 +793,42 @@ function normalizeCustomFonts(value: unknown): CustomFont[] {
 
 function getComboFromKeyboardEvent(event: {
   key: string
+  code?: string
   ctrlKey: boolean
   altKey: boolean
   shiftKey: boolean
   metaKey: boolean
+  isComposing?: boolean
 }): string | null {
   const key = event.key
+
+  // IME 조합 중이거나 IME가 가로챈 키('Process')는 무시한다.
+  // 이를 저장하면 한/영 상태에 따라 동작이 갈리는 깨진 단축키가 된다.
+  if (event.isComposing || key === 'Process' || key === 'Unidentified') {
+    return null
+  }
 
   if (key === 'Control' || key === 'Alt' || key === 'Shift' || key === 'Meta') {
     return null
   }
 
-  const normalizedKey =
-    key === ' ' ? 'Space' : key.length === 1 ? key.toUpperCase() : key
+  // 문자/숫자 키는 물리 키 위치(event.code) 기준으로 기록해,
+  // 한글 IME나 키보드 레이아웃과 무관하게 같은 키가 항상 같은 조합이 되게 한다.
+  const code = event.code ?? ''
+  let normalizedKey: string
+
+  if (/^Key[A-Z]$/.test(code)) {
+    normalizedKey = code.slice(3)
+  } else if (/^Digit[0-9]$/.test(code)) {
+    normalizedKey = code.slice(5)
+  } else if (key === ' ') {
+    normalizedKey = 'Space'
+  } else if (key.length === 1) {
+    normalizedKey = key.toUpperCase()
+  } else {
+    normalizedKey = key
+  }
+
   const parts = [
     event.ctrlKey ? 'Ctrl' : '',
     event.altKey ? 'Alt' : '',
@@ -1222,9 +1246,28 @@ function normalizeProjectWorkspace(input: unknown): ProjectWorkspace | null {
   )
 }
 
-function loadLocalSnapshot(): LocalSnapshot {
+// 스냅샷을 읽지 못해 초기화할 때, 원본을 별도 키에 백업해 수동 복구 여지를 남긴다.
+function backupUnreadableSnapshot(rawSnapshot: string | null) {
+  if (!rawSnapshot) {
+    return createInitialSnapshot()
+  }
+
   try {
-    const rawSnapshot = localStorage.getItem(STORAGE_KEY)
+    localStorage.setItem(`${STORAGE_KEY}.corrupted`, rawSnapshot)
+  } catch {
+    // 백업조차 실패하면 초기화만 진행한다.
+  }
+
+  console.error('저장된 작업 공간 스냅샷을 읽지 못해 초기화합니다. 원본은 백업 키에 보관했습니다.')
+
+  return { ...createInitialSnapshot(), recoveredFromError: true }
+}
+
+function loadLocalSnapshot(): LocalSnapshot {
+  let rawSnapshot: string | null = null
+
+  try {
+    rawSnapshot = localStorage.getItem(STORAGE_KEY)
 
     if (!rawSnapshot) {
       return createInitialSnapshot()
@@ -1280,7 +1323,7 @@ function loadLocalSnapshot(): LocalSnapshot {
     const normalizedProject = normalizeProjectPayload(parsedSnapshot)
 
     if (!normalizedProject) {
-      return createInitialSnapshot()
+      return backupUnreadableSnapshot(rawSnapshot)
     }
 
     const projectPath =
@@ -1302,7 +1345,7 @@ function loadLocalSnapshot(): LocalSnapshot {
       activeFontId: '',
     }
   } catch {
-    return createInitialSnapshot()
+    return backupUnreadableSnapshot(rawSnapshot)
   }
 }
 
@@ -1404,20 +1447,60 @@ function hasInvalidPathChars(value: string) {
   )
 }
 
+// 메인 프로세스의 sanitizeSegment와 동일한 규칙. 서로 다른 코드가 같은 파일명이
+// 되는 충돌(a?와 a* 모두 a_)을 렌더러에서 미리 잡기 위해 사용한다.
+function sanitizeCodeForFileName(value: string) {
+  return (
+    String(value)
+      .trim()
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+      .slice(0, 80) || 'item'
+  )
+}
+
 function findDuplicateCodes(items: Array<{ code: string }>) {
-  const seenCodes = new Set<string>()
+  const seenFileKeys = new Map<string, string>()
   const duplicateCodes = new Set<string>()
 
   for (const item of items) {
-    if (seenCodes.has(item.code)) {
+    // 실제 저장 파일명 기준으로 비교한다. (Windows 파일명은 대소문자 구분 없음)
+    const fileKey = sanitizeCodeForFileName(item.code).toLowerCase()
+    const existingCode = seenFileKeys.get(fileKey)
+
+    if (existingCode !== undefined) {
+      duplicateCodes.add(existingCode)
       duplicateCodes.add(item.code)
       continue
     }
 
-    seenCodes.add(item.code)
+    seenFileKeys.set(fileKey, item.code)
   }
 
   return [...duplicateCodes]
+}
+
+function findReservedCodes(items: Array<{ code: string }>) {
+  // profile은 캐릭터 프로필 이미지 파일명으로 예약되어 있다.
+  return items
+    .map((item) => item.code)
+    .filter(
+      (code) => sanitizeCodeForFileName(code).toLowerCase() === PROFILE_IMAGE_CODE,
+    )
+}
+
+function getUniqueSlotItems(items: Array<{ label: string; code: string }>) {
+  const seenFileKeys = new Set<string>()
+
+  return items.filter(({ code }) => {
+    const fileKey = sanitizeCodeForFileName(code).toLowerCase()
+
+    if (fileKey === PROFILE_IMAGE_CODE || seenFileKeys.has(fileKey)) {
+      return false
+    }
+
+    seenFileKeys.add(fileKey)
+    return true
+  })
 }
 
 function getToolMetric(toolId: ToolId, chatbot: ChatbotState, textLength: number) {
@@ -1636,6 +1719,16 @@ function EtomoToolApp() {
   }, [isDashboardVisible])
 
   useEffect(() => {
+    if (initialSnapshot.recoveredFromError) {
+      setStatus({
+        kind: 'warning',
+        message:
+          '저장된 작업 공간 데이터를 읽지 못해 초기 상태로 시작했습니다. 원본 데이터는 브라우저 저장소의 백업 키(etomo.localProjectState.corrupted)에 보관되어 있습니다.',
+      })
+    }
+  }, [initialSnapshot.recoveredFromError])
+
+  useEffect(() => {
     document.documentElement.dataset.theme = theme
   }, [theme])
 
@@ -1660,10 +1753,11 @@ function EtomoToolApp() {
           })
         })
         .catch(() => {
-          loadedFontIdsRef.current.delete(font.id)
+          // id를 로드 목록에 남겨 두어 같은 폰트를 무한 재시도하며
+          // 다른 상태 메시지를 계속 덮어쓰지 않게 한다. (재시도는 앱 재시작 시)
           setStatus({
             kind: 'warning',
-            message: `${font.name} 폰트를 불러오지 못했습니다. 파일이 삭제되었을 수 있습니다.`,
+            message: `${font.name} 폰트를 불러오지 못했습니다. 파일이 삭제되었을 수 있습니다. 설정에서 폰트를 삭제 후 다시 등록해 주세요.`,
           })
         })
     }
@@ -1733,6 +1827,22 @@ function EtomoToolApp() {
   }, [hotkeys, isSettingsOpen])
 
   useEffect(() => {
+    if (!isSettingsOpen) {
+      return undefined
+    }
+
+    const closeSettingsOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.defaultPrevented) {
+        setIsSettingsOpen(false)
+      }
+    }
+
+    window.addEventListener('keydown', closeSettingsOnEscape)
+
+    return () => window.removeEventListener('keydown', closeSettingsOnEscape)
+  }, [isSettingsOpen])
+
+  useEffect(() => {
     setLoreCardWidthText(String(chatbot.loreCardWidth))
     setLoreCardHeightText(String(chatbot.loreCardHeight))
     setLoreGridColumnsText(String(chatbot.loreGridColumns))
@@ -1794,6 +1904,7 @@ function EtomoToolApp() {
   // 최신 스냅샷 쓰기 함수를 ref로 유지해, 디바운스 타이머와 beforeunload flush가
   // 항상 마지막 상태를 저장하도록 한다. 쓰기 실패(쿼터 초과 등)가 앱을 죽이지 않게 감싼다.
   const persistLocalSnapshotRef = useRef(() => {})
+  const snapshotWriteFailureWarnedRef = useRef(false)
   persistLocalSnapshotRef.current = () => {
     try {
       localStorage.setItem(
@@ -1816,6 +1927,17 @@ function EtomoToolApp() {
       )
     } catch (error) {
       console.error('로컬 스냅샷 저장에 실패했습니다.', error)
+
+      // 저장이 조용히 실패한 채 재시작하면 데이터가 사라진 것처럼 보인다.
+      // 세션당 한 번은 반드시 사용자에게 알린다.
+      if (!snapshotWriteFailureWarnedRef.current) {
+        snapshotWriteFailureWarnedRef.current = true
+        setStatus({
+          kind: 'error',
+          message:
+            '작업 공간 스냅샷 저장에 실패했습니다(저장 공간 부족 가능). 폴더가 지정된 프로젝트는 파일로 계속 저장되지만, 폴더 없는 임시 프로젝트는 앱 재시작 시 사라질 수 있습니다.',
+        })
+      }
     }
   }
 
@@ -1855,8 +1977,22 @@ function EtomoToolApp() {
     })
   }, [])
 
+  // 앱 시작 직후나 프로젝트 전환 직후에는 로드된 상태를 그대로 다시 쓰는 것이므로
+  // 자동저장을 건너뛴다. 그렇지 않으면 localStorage에 남은 (더 오래된) 상태가
+  // 디스크의 etomo.project.json을 사용자 편집 없이 덮어쓸 수 있다.
+  const skipNextAutoSaveRef = useRef(true)
+
+  useEffect(() => {
+    skipNextAutoSaveRef.current = true
+  }, [activeProjectId, projectPath])
+
   useEffect(() => {
     if (!projectPath || !window.electronAPI?.saveProjectState) {
+      return undefined
+    }
+
+    if (skipNextAutoSaveRef.current) {
+      skipNextAutoSaveRef.current = false
       return undefined
     }
 
@@ -2232,7 +2368,12 @@ function EtomoToolApp() {
       return
     }
 
-    if (chatbot.characters.some((character) => character.code === characterCode)) {
+    // Windows에서는 alice와 Alice가 같은 폴더를 공유하므로 대소문자 구분 없이 중복을 막는다.
+    if (
+      chatbot.characters.some(
+        (character) => character.code.toLowerCase() === characterCode.toLowerCase(),
+      )
+    ) {
       setStatus({
         kind: 'error',
         message: `이미 등록된 캐릭터 코드입니다: ${characterCode}`,
@@ -2246,9 +2387,12 @@ function EtomoToolApp() {
       characters: [
         ...chatbot.characters,
         // 새 캐릭터는 현재 이미지 코드 기준으로 격자를 미리 생성해 준다.
+        // 파일명이 겹치는 코드와 예약 코드(profile)는 제외한다.
         createCharacterAssets(
           characterCode,
-          parseCodeText(chatbot.codeText).map(({ label, code }) => createSlot(label, code)),
+          getUniqueSlotItems(parseCodeText(chatbot.codeText)).map(({ label, code }) =>
+            createSlot(label, code),
+          ),
         ),
       ],
     }))
@@ -2367,7 +2511,11 @@ function EtomoToolApp() {
 
     if (
       isCodeChanged &&
-      chatbot.characters.some((character) => character.code === nextCode)
+      chatbot.characters.some(
+        (character) =>
+          character.code !== previousCode &&
+          character.code.toLowerCase() === nextCode.toLowerCase(),
+      )
     ) {
       setStatus({
         kind: 'error',
@@ -2649,6 +2797,12 @@ function EtomoToolApp() {
   async function handleDeleteFont(font: CustomFont) {
     setCustomFonts((currentFonts) => currentFonts.filter((currentFont) => currentFont.id !== font.id))
     setActiveFontId((currentFontId) => (currentFontId === font.id ? '' : currentFontId))
+    loadedFontIdsRef.current.delete(font.id)
+    document.fonts.forEach((fontFace) => {
+      if (fontFace.family === font.id || fontFace.family === `"${font.id}"`) {
+        document.fonts.delete(fontFace)
+      }
+    })
 
     if (window.electronAPI?.deleteFont) {
       try {
@@ -2903,6 +3057,21 @@ function EtomoToolApp() {
 
       const loadedProject = normalizeProjectPayload(result.state)
       const selectedPath = result.path
+      const preCheckComparablePath = getComparableProjectPath(selectedPath)
+      const alreadyOpenSelectedProject = projects.find(
+        (project) => getComparableProjectPath(project.projectPath) === preCheckComparablePath,
+      )
+
+      // 이미 열려 있는 폴더면 탭을 디스크 상태로 교체하지 않고 해당 탭으로 이동만 한다.
+      // 교체하면 아직 저장되지 않은 메모리 편집이 디스크의 옛 상태로 덮어써진다.
+      if (alreadyOpenSelectedProject) {
+        setActiveProjectId(alreadyOpenSelectedProject.id)
+        setStatus({
+          kind: 'info',
+          message: '선택한 폴더는 이미 열려 있는 프로젝트라 해당 탭으로 이동했습니다.',
+        })
+        return
+      }
 
       // etomo 프로젝트가 아닌데 내용물이 있는 폴더는 이미지 등록/삭제 과정에서
       // 기존 파일이 덮어써지거나 지워질 수 있으므로 명시적으로 확인받는다.
@@ -2925,14 +3094,8 @@ function EtomoToolApp() {
         }
       }
 
-      const selectedComparablePath = getComparableProjectPath(selectedPath)
-      const existingProject = projects.find(
-        (project) => getComparableProjectPath(project.projectPath) === selectedComparablePath,
-      )
-      const shouldAttachCurrentDraft =
-        !existingProject && !activeProject.projectPath && !loadedProject
-      const nextProjectId =
-        existingProject?.id ?? (shouldAttachCurrentDraft ? activeProject.id : createId('project'))
+      const shouldAttachCurrentDraft = !activeProject.projectPath && !loadedProject
+      const nextProjectId = shouldAttachCurrentDraft ? activeProject.id : createId('project')
       // 하위 폴더의 캐릭터 자동 등록은 실제 etomo 프로젝트를 다시 열 때만 한다.
       // 일반 폴더의 하위 폴더를 캐릭터로 만들면, 사용자가 목록을 정리하다가
       // 실제 폴더를 삭제하게 되는 사고로 이어진다.
@@ -2957,12 +3120,6 @@ function EtomoToolApp() {
         setGlobalProfilePresets(nextGlobalProfilePresets)
       }
       setProjects((currentProjects) => {
-        if (existingProject) {
-          return currentProjects.map((project) =>
-            project.id === existingProject.id ? nextProject : project,
-          )
-        }
-
         if (shouldAttachCurrentDraft) {
           return currentProjects.map((project) =>
             project.id === activeProject.id ? nextProject : project,
@@ -2975,6 +3132,19 @@ function EtomoToolApp() {
       setImagePreviews({})
       setFailedImageKeys(new Set())
       setAutoSaveStatus('idle')
+
+      // 프로젝트 파일이 없던 폴더에는 초기 파일을 즉시 만들어 둔다.
+      // (자동저장은 이후 실제 편집이 있을 때만 동작한다.)
+      if (!loadedProject && window.electronAPI?.saveProjectState) {
+        void window.electronAPI
+          .saveProjectState(selectedPath, createProjectPayload(nextProject.chatbot))
+          .catch(() => {
+            setStatus({
+              kind: 'error',
+              message: '프로젝트 파일 생성에 실패했습니다.',
+            })
+          })
+      }
 
       if (loadedProject) {
         setActiveTool('profile')
@@ -3074,20 +3244,34 @@ function EtomoToolApp() {
         }
       }
 
+      const nextChangedChatbot = mergeChatbotWithCharacterFolders(
+        {
+          ...activeProject.chatbot,
+          title: getProjectFolderName(selectedPath) || activeProject.chatbot.title,
+        },
+        result.state ? result.characterFolders : undefined,
+      )
+
       updateActiveProject((project) => ({
         ...project,
         projectPath: selectedPath,
-        chatbot: mergeChatbotWithCharacterFolders(
-          {
-            ...project.chatbot,
-            title: getProjectFolderName(selectedPath) || project.chatbot.title,
-          },
-          result.state ? result.characterFolders : undefined,
-        ),
+        chatbot: nextChangedChatbot,
       }))
       setImagePreviews({})
       setFailedImageKeys(new Set())
       setAutoSaveStatus('idle')
+
+      // 사용자가 덮어쓰기/사용을 확인한 시점이므로 프로젝트 파일을 즉시 기록한다.
+      if (window.electronAPI?.saveProjectState) {
+        void window.electronAPI
+          .saveProjectState(selectedPath, createProjectPayload(nextChangedChatbot))
+          .catch(() => {
+            setStatus({
+              kind: 'error',
+              message: '프로젝트 파일 저장에 실패했습니다.',
+            })
+          })
+      }
       setStatus({
         kind: result.state ? 'warning' : 'success',
         message: result.state
@@ -3136,8 +3320,39 @@ function EtomoToolApp() {
     if (duplicateCodes.length > 0) {
       setStatus({
         kind: 'error',
-        message: `중복된 이미지 코드가 있습니다: ${duplicateCodes.join(', ')}`,
+        message: `저장 파일명이 겹치는 이미지 코드가 있습니다: ${duplicateCodes.join(', ')}`,
       })
+      return
+    }
+
+    const reservedCodes = findReservedCodes(parsedItems)
+
+    if (reservedCodes.length > 0) {
+      setStatus({
+        kind: 'error',
+        message: `${reservedCodes.join(', ')} 코드는 캐릭터 프로필 이미지 파일명(profile)과 겹쳐 사용할 수 없습니다.`,
+      })
+      return
+    }
+
+    // 적용으로 사라지는 코드에 등록된 이미지가 있으면 먼저 알려준다.
+    // (파일은 폴더에 남지만 앱에서의 연결 정보가 해제된다.)
+    const nextSlotKeys = new Set(parsedItems.map((item) => item.code))
+    const unlinkedImageCount = chatbot.characters.reduce(
+      (total, character) =>
+        total +
+        character.slots.filter((slot) => slot.imagePath && !nextSlotKeys.has(getSlotKey(slot)))
+          .length,
+      0,
+    )
+
+    if (
+      unlinkedImageCount > 0 &&
+      !window.confirm(
+        `적용하면 코드 목록에서 사라진 항목의 이미지 등록 ${unlinkedImageCount}개가 해제됩니다.\n` +
+          '이미지 파일 자체는 캐릭터 폴더에 그대로 남습니다.\n\n계속하시겠습니까?',
+      )
+    ) {
       return
     }
 
@@ -5795,10 +6010,17 @@ function EtomoToolApp() {
                       readOnly
                       value={hotkeys[action] ?? ''}
                       onKeyDown={(event) => {
+                        // Tab은 기본 포커스 이동을 살려 키보드로 빠져나갈 수 있게 한다.
+                        if (event.key === 'Tab') {
+                          event.stopPropagation()
+                          return
+                        }
+
                         event.preventDefault()
                         event.stopPropagation()
 
-                        if (event.key === 'Escape' || event.key === 'Tab') {
+                        if (event.key === 'Escape') {
+                          event.currentTarget.blur()
                           return
                         }
 
@@ -5807,7 +6029,15 @@ function EtomoToolApp() {
                           return
                         }
 
-                        const combo = getComboFromKeyboardEvent(event)
+                        const combo = getComboFromKeyboardEvent({
+                          key: event.key,
+                          code: event.code,
+                          ctrlKey: event.ctrlKey,
+                          altKey: event.altKey,
+                          shiftKey: event.shiftKey,
+                          metaKey: event.metaKey,
+                          isComposing: event.nativeEvent.isComposing,
+                        })
 
                         if (!combo) {
                           return
