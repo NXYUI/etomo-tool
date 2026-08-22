@@ -831,7 +831,20 @@ ipcMain.handle('project:delete-character-folder', async (_event, payload) => {
   const characterFolder = payload.characterCode.trim()
   const absolutePath = ensureInsideProject(projectPath, path.join(projectPath, characterFolder))
 
-  await fs.rm(absolutePath, { recursive: true, force: true })
+  try {
+    await fs.access(absolutePath)
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return { ok: true, absolutePath, relativePath: characterFolder }
+    }
+
+    throw error
+  }
+
+  // Move to the OS trash instead of deleting permanently, so an accidental
+  // character removal can always be recovered. Never fall back to a hard
+  // recursive delete: if the trash is unavailable, fail and keep the folder.
+  await shell.trashItem(absolutePath)
 
   return {
     ok: true,
@@ -948,11 +961,22 @@ ipcMain.handle('project:delete-image-file', async (_event, payload) => {
 
   return enqueueProjectSave(projectPath, async () => {
     try {
-      await fs.unlink(absolutePath)
+      await fs.access(absolutePath)
     } catch (error) {
-      if (!error || error.code !== 'ENOENT') {
-        throw error
+      if (error && error.code === 'ENOENT') {
+        return { ok: true }
       }
+
+      throw error
+    }
+
+    // Prefer the OS trash so a mistaken slot deletion is recoverable; fall back
+    // to a plain unlink only where the trash is unavailable (e.g. some
+    // removable drives), since the user explicitly asked to delete this file.
+    try {
+      await shell.trashItem(absolutePath)
+    } catch {
+      await fs.unlink(absolutePath)
     }
 
     return { ok: true }

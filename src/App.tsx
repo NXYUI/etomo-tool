@@ -345,6 +345,7 @@ const APP_GUIDELINE_SECTIONS = [
       '캐릭터 코드는 프로젝트 폴더 바로 아래에 만들어지는 폴더 이름입니다.',
       '표시 이름은 앱에서 알아보기 위한 이름이며, 실제 폴더명은 캐릭터 코드가 기준입니다.',
       '시트 항목은 캐릭터마다 따로 관리되므로 필요한 항목만 직접 추가하세요.',
+      '캐릭터 삭제 시 "코드만 제거"와 "폴더까지 삭제"를 선택할 수 있고, 폴더 삭제는 휴지통으로 이동하므로 복구할 수 있습니다.',
     ],
   },
   {
@@ -1574,6 +1575,7 @@ function EtomoToolApp() {
   const [savingSlotId, setSavingSlotId] = useState<string | null>(null)
   const [deletingSlotId, setDeletingSlotId] = useState<string | null>(null)
   const [deleteTargetSlotKey, setDeleteTargetSlotKey] = useState<string | null>(null)
+  const [characterDeleteTarget, setCharacterDeleteTarget] = useState<string | null>(null)
   const [promptCloseTargetId, setPromptCloseTargetId] = useState<string | null>(null)
   // 시작 대시보드는 창 세션당 한 번만 보여야 한다. sessionStorage로 표시 여부를 기록해
   // 컴포넌트 리마운트나 페이지 리로드가 일어나도 반복해서 뜨지 않게 한다.
@@ -2109,6 +2111,9 @@ function EtomoToolApp() {
   const deleteTargetSlot = deleteTargetSlotKey
     ? activeCharacter?.slots.find((slot) => getSlotKey(slot) === deleteTargetSlotKey)
     : undefined
+  const characterDeleteTargetCharacter = characterDeleteTarget
+    ? chatbot.characters.find((character) => character.code === characterDeleteTarget)
+    : undefined
   const promptCloseTargetTab = promptCloseTargetId
     ? chatbot.promptTabs.find((tab) => tab.id === promptCloseTargetId)
     : undefined
@@ -2134,6 +2139,7 @@ function EtomoToolApp() {
     setNewPresetName('')
     setNewPresetFieldsText('')
     setDeleteTargetSlotKey(null)
+    setCharacterDeleteTarget(null)
   }, [activeProjectId])
 
   function updateChatbot(updater: (chatbot: ChatbotState) => ChatbotState) {
@@ -2281,14 +2287,16 @@ function EtomoToolApp() {
   }
 
   function handleRemoveCharacterCode(characterCode: string) {
-    if (
-      projectPath &&
-      window.electronAPI?.deleteCharacterFolder &&
-      !window.confirm(`${characterCode} 폴더와 그 안의 파일을 삭제하시겠습니까?`)
-    ) {
+    // 폴더가 연결된 프로젝트에서는 "코드만 제거 / 폴더까지 삭제" 선택 모달을 띄운다.
+    if (projectPath && window.electronAPI?.deleteCharacterFolder) {
+      setCharacterDeleteTarget(characterCode)
       return
     }
 
+    removeCharacterCode(characterCode, false)
+  }
+
+  function removeCharacterCode(characterCode: string, shouldDeleteFolder: boolean) {
     const remainingCharacters = chatbot.characters.filter(
       (character) => character.code !== characterCode,
     )
@@ -2303,21 +2311,32 @@ function EtomoToolApp() {
       characters: chatbot.characters.filter((character) => character.code !== characterCode),
     }))
     setDeleteTargetSlotKey(null)
-    setStatus({
-      kind: 'success',
-      message: `${characterCode} 캐릭터 코드를 제거했습니다.`,
-    })
+    setCharacterDeleteTarget(null)
 
-    if (!projectPath || !window.electronAPI?.deleteCharacterFolder) {
+    if (!shouldDeleteFolder || !projectPath || !window.electronAPI?.deleteCharacterFolder) {
+      setStatus({
+        kind: 'success',
+        message: projectPath
+          ? `${characterCode} 캐릭터 코드를 제거했습니다. 폴더와 파일은 그대로 남아 있습니다.`
+          : `${characterCode} 캐릭터 코드를 제거했습니다.`,
+      })
       return
     }
 
-    void window.electronAPI.deleteCharacterFolder(projectPath, characterCode).catch(() => {
-      setStatus({
-        kind: 'error',
-        message: `${characterCode} 캐릭터 폴더 삭제에 실패했습니다.`,
+    void window.electronAPI
+      .deleteCharacterFolder(projectPath, characterCode)
+      .then(() => {
+        setStatus({
+          kind: 'success',
+          message: `${characterCode} 캐릭터 코드를 제거하고 폴더를 휴지통으로 옮겼습니다.`,
+        })
       })
-    })
+      .catch(() => {
+        setStatus({
+          kind: 'error',
+          message: `${characterCode} 폴더를 휴지통으로 옮기지 못했습니다. 폴더는 그대로 남아 있습니다.`,
+        })
+      })
   }
 
   async function handleSaveActiveCharacterMeta() {
@@ -2891,9 +2910,8 @@ function EtomoToolApp() {
         const proceedWithExistingFolder = window.confirm(
           `선택한 폴더는 etomo-tool 프로젝트가 아니지만 파일/폴더 ${result.entryCount}개가 이미 들어 있습니다.\n\n` +
             '이 폴더를 프로젝트 폴더로 지정하면:\n' +
-            '- 하위 폴더가 캐릭터 폴더로 인식됩니다.\n' +
-            '- 이미지 등록/삭제 시 같은 이름의 기존 파일이 덮어써지거나 삭제될 수 있습니다.\n' +
-            '- 캐릭터 코드를 삭제하면 해당 폴더 전체가 삭제됩니다.\n\n' +
+            '- 기존 하위 폴더는 캐릭터로 자동 등록되지 않으며 그대로 유지됩니다.\n' +
+            '- 다만 이미지 등록 시 같은 이름의 기존 파일이 덮어써질 수 있습니다.\n\n' +
             '데이터 보호를 위해 새 빈 폴더를 만들어 지정하는 방식을 권장합니다.\n' +
             '그래도 이 폴더를 사용하시겠습니까?',
         )
@@ -2915,12 +2933,15 @@ function EtomoToolApp() {
         !existingProject && !activeProject.projectPath && !loadedProject
       const nextProjectId =
         existingProject?.id ?? (shouldAttachCurrentDraft ? activeProject.id : createId('project'))
+      // 하위 폴더의 캐릭터 자동 등록은 실제 etomo 프로젝트를 다시 열 때만 한다.
+      // 일반 폴더의 하위 폴더를 캐릭터로 만들면, 사용자가 목록을 정리하다가
+      // 실제 폴더를 삭제하게 되는 사고로 이어진다.
       const nextChatbot = mergeChatbotWithCharacterFolders(
         loadedProject?.chatbot ??
           (shouldAttachCurrentDraft
             ? activeProject.chatbot
             : createChatbot(getProjectFolderName(selectedPath) || '새 챗봇')),
-        result.characterFolders,
+        loadedProject ? result.characterFolders : undefined,
       )
       const importedProfilePresets = loadedProject?.chatbot.profilePresets ?? []
       const nextGlobalProfilePresets = mergeProfilePresets([
@@ -3038,7 +3059,8 @@ function EtomoToolApp() {
       } else if ((result.entryCount ?? 0) > 0) {
         const proceedWithExistingFolder = window.confirm(
           `선택한 폴더에 파일/폴더 ${result.entryCount}개가 이미 들어 있습니다.\n\n` +
-            '이미지 등록/삭제 시 같은 이름의 기존 파일이 덮어써지거나 삭제될 수 있습니다.\n' +
+            '기존 하위 폴더는 캐릭터로 자동 등록되지 않지만,\n' +
+            '이미지 등록 시 같은 이름의 기존 파일이 덮어써질 수 있습니다.\n' +
             '새 빈 폴더를 만들어 지정하는 방식을 권장합니다.\n\n' +
             '그래도 이 폴더를 사용하시겠습니까?',
         )
@@ -3060,7 +3082,7 @@ function EtomoToolApp() {
             ...project.chatbot,
             title: getProjectFolderName(selectedPath) || project.chatbot.title,
           },
-          result.characterFolders,
+          result.state ? result.characterFolders : undefined,
         ),
       }))
       setImagePreviews({})
@@ -3266,7 +3288,7 @@ function EtomoToolApp() {
       )
       setStatus({
         kind: 'success',
-        message: `${slot.label} 이미지 등록을 해제했습니다.`,
+        message: `${slot.label} 이미지 등록을 해제하고 파일을 휴지통으로 옮겼습니다.`,
       })
     } catch {
       setStatus({
@@ -5866,6 +5888,62 @@ function EtomoToolApp() {
         </div>
       )}
 
+      {characterDeleteTargetCharacter && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setCharacterDeleteTarget(null)
+            }
+          }}
+        >
+          <section
+            className="confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-character-title"
+          >
+            <div>
+              <AlertTriangle size={22} aria-hidden="true" />
+              <div>
+                <h2 id="delete-character-title">
+                  {getCharacterDisplayLabel(characterDeleteTargetCharacter)} 캐릭터를 삭제하시겠습니까?
+                </h2>
+                <p>
+                  코드만 제거하면 {characterDeleteTargetCharacter.code} 폴더와 그 안의 파일은
+                  그대로 남습니다. 폴더까지 삭제하면 폴더가 휴지통으로 이동합니다.
+                </p>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button
+                className="icon-text-button"
+                type="button"
+                onClick={() => setCharacterDeleteTarget(null)}
+              >
+                취소
+              </button>
+              <button
+                className="icon-text-button"
+                type="button"
+                onClick={() => removeCharacterCode(characterDeleteTargetCharacter.code, false)}
+              >
+                코드만 제거
+              </button>
+              <button
+                className="primary-button danger-button"
+                type="button"
+                onClick={() => removeCharacterCode(characterDeleteTargetCharacter.code, true)}
+              >
+                <Trash2 size={16} aria-hidden="true" />
+                폴더까지 삭제
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {deleteTargetSlot && (
         <div
           className="modal-backdrop"
@@ -5882,7 +5960,8 @@ function EtomoToolApp() {
               <div>
                 <h2 id="delete-image-title">정말 삭제하시겠습니까?</h2>
                 <p>
-                  {deleteTargetSlot.label} 슬롯에 등록된 이미지 파일과 연결 정보를 삭제합니다.
+                  {deleteTargetSlot.label} 슬롯의 등록 정보를 해제하고 이미지 파일을 휴지통으로
+                  옮깁니다.
                 </p>
               </div>
             </div>
