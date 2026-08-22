@@ -23,6 +23,7 @@ import {
   Settings,
   Table2,
   Trash2,
+  Type,
   WandSparkles,
   X,
 } from 'lucide-react'
@@ -131,6 +132,12 @@ interface ProjectWorkspace {
   chatbot: ChatbotState
 }
 
+interface CustomFont {
+  id: string
+  name: string
+  fileName: string
+}
+
 interface LocalSnapshot {
   version: number
   activeProjectId: string
@@ -140,6 +147,8 @@ interface LocalSnapshot {
   projectsFolded?: boolean
   theme?: string
   hotkeys?: Record<string, string>
+  customFonts?: CustomFont[]
+  activeFontId?: string
 }
 
 type HotkeyAction =
@@ -192,7 +201,8 @@ interface AppErrorBoundaryState {
 }
 
 const STORAGE_KEY = 'etomo.localProjectState'
-const PROJECT_VERSION = 17
+const DASHBOARD_SHOWN_KEY = 'etomo.startupDashboardShown'
+const PROJECT_VERSION = 18
 const PROFILE_IMAGE_SLOT_KEY = '__profile__'
 const PROFILE_IMAGE_CODE = 'profile'
 const DEFAULT_THEME_ID = 'deep-teal'
@@ -376,10 +386,11 @@ const APP_GUIDELINE_SECTIONS = [
     ],
   },
   {
-    title: '설정 (테마 / 단축키)',
+    title: '설정 (테마 / 폰트 / 단축키)',
     items: [
       '상단 오른쪽의 톱니 버튼으로 설정 창을 엽니다.',
       '테마는 색상뿐 아니라 분위기/장르 컨셉의 16종 중에서 고를 수 있습니다.',
+      'ttf / otf / woff / woff2 폰트 파일을 등록하면 앱 전체 글꼴로 사용할 수 있습니다.',
       '서브앱 이동 단축키는 기본값이 Ctrl+↑/↓(순환), Ctrl+1~6(직접 이동)입니다.',
       '설정 창에서 입력칸을 클릭한 뒤 원하는 키 조합을 눌러 단축키를 바꿀 수 있습니다.',
       '테마와 단축키 설정은 이 컴퓨터의 앱 설정으로 저장되며 프로젝트 파일과는 무관합니다.',
@@ -715,6 +726,8 @@ function createInitialSnapshot(): LocalSnapshot {
     projectsFolded: false,
     theme: DEFAULT_THEME_ID,
     hotkeys: { ...DEFAULT_HOTKEYS },
+    customFonts: [],
+    activeFontId: '',
   }
 }
 
@@ -759,6 +772,21 @@ function normalizeHotkeys(value: unknown): Record<HotkeyAction, string> {
   }
 
   return hotkeys
+}
+
+function normalizeCustomFonts(value: unknown): CustomFont[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.filter(
+    (font): font is CustomFont =>
+      Boolean(font) &&
+      typeof font === 'object' &&
+      typeof (font as CustomFont).id === 'string' &&
+      typeof (font as CustomFont).name === 'string' &&
+      typeof (font as CustomFont).fileName === 'string',
+  )
 }
 
 function getComboFromKeyboardEvent(event: {
@@ -1241,6 +1269,9 @@ function loadLocalSnapshot(): LocalSnapshot {
           projectsFolded: Boolean(parsedSnapshot.projectsFolded),
           theme: normalizeThemeId(parsedSnapshot.theme),
           hotkeys: normalizeHotkeys(parsedSnapshot.hotkeys),
+          customFonts: normalizeCustomFonts(parsedSnapshot.customFonts),
+          activeFontId:
+            typeof parsedSnapshot.activeFontId === 'string' ? parsedSnapshot.activeFontId : '',
         }
       }
     }
@@ -1266,6 +1297,8 @@ function loadLocalSnapshot(): LocalSnapshot {
       projectsFolded: false,
       theme: DEFAULT_THEME_ID,
       hotkeys: { ...DEFAULT_HOTKEYS },
+      customFonts: [],
+      activeFontId: '',
     }
   } catch {
     return createInitialSnapshot()
@@ -1531,6 +1564,10 @@ function EtomoToolApp() {
   const [hotkeys, setHotkeys] = useState<Record<HotkeyAction, string>>(() =>
     normalizeHotkeys(initialSnapshot.hotkeys),
   )
+  const [customFonts, setCustomFonts] = useState<CustomFont[]>(() =>
+    normalizeCustomFonts(initialSnapshot.customFonts),
+  )
+  const [activeFontId, setActiveFontId] = useState(initialSnapshot.activeFontId ?? '')
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [imagePreviews, setImagePreviews] = useState<Record<string, string>>({})
   const [failedImageKeys, setFailedImageKeys] = useState<Set<string>>(() => new Set())
@@ -1538,7 +1575,15 @@ function EtomoToolApp() {
   const [deletingSlotId, setDeletingSlotId] = useState<string | null>(null)
   const [deleteTargetSlotKey, setDeleteTargetSlotKey] = useState<string | null>(null)
   const [promptCloseTargetId, setPromptCloseTargetId] = useState<string | null>(null)
-  const [isDashboardVisible, setIsDashboardVisible] = useState(true)
+  // 시작 대시보드는 창 세션당 한 번만 보여야 한다. sessionStorage로 표시 여부를 기록해
+  // 컴포넌트 리마운트나 페이지 리로드가 일어나도 반복해서 뜨지 않게 한다.
+  const [isDashboardVisible, setIsDashboardVisible] = useState(() => {
+    try {
+      return sessionStorage.getItem(DASHBOARD_SHOWN_KEY) !== '1'
+    } catch {
+      return true
+    }
+  })
   const [newCharacterCode, setNewCharacterCode] = useState('')
   const [characterCodeDraft, setCharacterCodeDraft] = useState('')
   const [characterDisplayNameDraft, setCharacterDisplayNameDraft] = useState('')
@@ -1575,6 +1620,12 @@ function EtomoToolApp() {
       return undefined
     }
 
+    try {
+      sessionStorage.setItem(DASHBOARD_SHOWN_KEY, '1')
+    } catch {
+      // sessionStorage를 못 쓰는 환경에서는 타이머만으로 동작한다.
+    }
+
     const dashboardTimer = window.setTimeout(() => {
       setIsDashboardVisible(false)
     }, 10000)
@@ -1585,6 +1636,46 @@ function EtomoToolApp() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme
   }, [theme])
+
+  const loadedFontIdsRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!window.electronAPI?.readFontAsDataUrl) {
+      return
+    }
+
+    const fontsToLoad = customFonts.filter((font) => !loadedFontIdsRef.current.has(font.id))
+
+    for (const font of fontsToLoad) {
+      loadedFontIdsRef.current.add(font.id)
+      window.electronAPI
+        .readFontAsDataUrl(font.fileName)
+        .then(({ dataUrl }) => {
+          const fontFace = new FontFace(font.id, `url("${dataUrl}")`)
+
+          return fontFace.load().then((loadedFontFace) => {
+            document.fonts.add(loadedFontFace)
+          })
+        })
+        .catch(() => {
+          loadedFontIdsRef.current.delete(font.id)
+          setStatus({
+            kind: 'warning',
+            message: `${font.name} 폰트를 불러오지 못했습니다. 파일이 삭제되었을 수 있습니다.`,
+          })
+        })
+    }
+  }, [customFonts])
+
+  useEffect(() => {
+    const activeFont = customFonts.find((font) => font.id === activeFontId)
+
+    if (activeFont) {
+      document.documentElement.style.setProperty('--app-font', `"${activeFont.id}"`)
+    } else {
+      document.documentElement.style.removeProperty('--app-font')
+    }
+  }, [activeFontId, customFonts])
 
   useEffect(() => {
     const handleHotkey = (event: globalThis.KeyboardEvent) => {
@@ -1717,6 +1808,8 @@ function EtomoToolApp() {
           globalProfilePresets,
           theme,
           hotkeys,
+          customFonts,
+          activeFontId,
         }),
       )
     } catch (error) {
@@ -1728,7 +1821,17 @@ function EtomoToolApp() {
     const snapshotTimer = window.setTimeout(() => persistLocalSnapshotRef.current(), 500)
 
     return () => window.clearTimeout(snapshotTimer)
-  }, [activeProjectId, activeTool, globalProfilePresets, hotkeys, projects, projectsFolded, theme])
+  }, [
+    activeFontId,
+    activeProjectId,
+    activeTool,
+    customFonts,
+    globalProfilePresets,
+    hotkeys,
+    projects,
+    projectsFolded,
+    theme,
+  ])
 
   // 디바운스 중에 프로젝트를 전환하거나 창을 닫아도 마지막 편집이 디스크에 남도록
   // 대기 중인 저장을 ref에 보관하고, 전환/종료 시점에 flush한다.
@@ -2489,6 +2592,56 @@ function EtomoToolApp() {
     setStatus({
       kind: 'success',
       message: `${preset?.name ?? '항목'} 프리셋을 삭제했습니다.`,
+    })
+  }
+
+  async function handleRegisterFont() {
+    if (!window.electronAPI?.registerFont) {
+      setStatus({
+        kind: 'warning',
+        message: '커스텀 폰트 등록은 Electron 앱에서 사용할 수 있습니다.',
+      })
+      return
+    }
+
+    try {
+      const result = await window.electronAPI.registerFont()
+
+      if (result.canceled || !result.font) {
+        return
+      }
+
+      const registeredFont = result.font
+
+      setCustomFonts((currentFonts) => [...currentFonts, registeredFont])
+      setActiveFontId(registeredFont.id)
+      setStatus({
+        kind: 'success',
+        message: `${registeredFont.name} 폰트를 등록하고 앱 전체에 적용했습니다.`,
+      })
+    } catch {
+      setStatus({
+        kind: 'error',
+        message: '폰트 등록에 실패했습니다. ttf / otf / woff / woff2 파일만 지원합니다.',
+      })
+    }
+  }
+
+  async function handleDeleteFont(font: CustomFont) {
+    setCustomFonts((currentFonts) => currentFonts.filter((currentFont) => currentFont.id !== font.id))
+    setActiveFontId((currentFontId) => (currentFontId === font.id ? '' : currentFontId))
+
+    if (window.electronAPI?.deleteFont) {
+      try {
+        await window.electronAPI.deleteFont(font.fileName)
+      } catch {
+        // 폰트 파일 삭제 실패는 치명적이지 않다. 목록에서는 이미 제거된 상태다.
+      }
+    }
+
+    setStatus({
+      kind: 'success',
+      message: `${font.name} 폰트를 삭제했습니다.`,
     })
   }
 
@@ -5255,17 +5408,20 @@ function EtomoToolApp() {
     <div className="workspace">
       {isDashboardVisible && (
         <section className="startup-dashboard" aria-label="etomo-tool 대시보드">
-          <div className="startup-dashboard-image">
-            <img src={`${import.meta.env.BASE_URL}Dashboard.png`} alt="etomo-tool dashboard" />
+          <div className="startup-dashboard-content">
+            <div className="startup-dashboard-image">
+              <img src={`${import.meta.env.BASE_URL}Dashboard.png`} alt="etomo-tool dashboard" />
+            </div>
+            <button
+              className="startup-dashboard-close"
+              type="button"
+              aria-label="대시보드 닫기"
+              onClick={() => setIsDashboardVisible(false)}
+            >
+              <X size={16} aria-hidden="true" />
+              닫기
+            </button>
           </div>
-          <button
-            className="startup-dashboard-close"
-            type="button"
-            aria-label="대시보드 닫기"
-            onClick={() => setIsDashboardVisible(false)}
-          >
-            닫기
-          </button>
         </section>
       )}
 
@@ -5529,6 +5685,68 @@ function EtomoToolApp() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="settings-section">
+              <div className="subsection-heading">
+                <Type size={16} aria-hidden="true" />
+                <h3>폰트</h3>
+                <button
+                  className="icon-text-button"
+                  type="button"
+                  onClick={() => void handleRegisterFont()}
+                  title="ttf / otf / woff / woff2 폰트 파일 등록"
+                >
+                  <Plus size={14} aria-hidden="true" />
+                  폰트 파일 등록
+                </button>
+              </div>
+              <div className="font-list" role="listbox" aria-label="앱 폰트 선택">
+                <button
+                  role="option"
+                  aria-selected={!activeFontId || !customFonts.some((font) => font.id === activeFontId)}
+                  className={
+                    !activeFontId || !customFonts.some((font) => font.id === activeFontId)
+                      ? 'font-item active'
+                      : 'font-item'
+                  }
+                  type="button"
+                  onClick={() => setActiveFontId('')}
+                >
+                  <strong>기본 폰트</strong>
+                  <span>Inter / 시스템 폰트</span>
+                </button>
+                {customFonts.map((font) => (
+                  <div
+                    className={activeFontId === font.id ? 'font-item-row active' : 'font-item-row'}
+                    key={font.id}
+                  >
+                    <button
+                      role="option"
+                      aria-selected={activeFontId === font.id}
+                      className={activeFontId === font.id ? 'font-item active' : 'font-item'}
+                      type="button"
+                      onClick={() => setActiveFontId(font.id)}
+                      style={{ fontFamily: `"${font.id}"` }}
+                    >
+                      <strong>{font.name}</strong>
+                      <span>가나다라 ABC 123</span>
+                    </button>
+                    <button
+                      className="icon-button danger"
+                      type="button"
+                      onClick={() => void handleDeleteFont(font)}
+                      title={`${font.name} 폰트 삭제`}
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <p className="hotkey-hint">
+                등록한 폰트는 앱 화면 전체에 적용됩니다. 폰트 파일은 이 컴퓨터의 앱 데이터
+                폴더에 복사되며 프로젝트 폴더와는 무관합니다.
+              </p>
             </div>
 
             <div className="settings-section">

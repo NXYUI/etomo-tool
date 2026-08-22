@@ -32,8 +32,8 @@
   color: var(--text);
   background: var(--bg);
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+    var(--app-font, Inter), Inter, ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   line-height: 1.5;
   text-rendering: optimizeLegibility;
@@ -233,13 +233,19 @@ button:focus-visible,
   animation: startup-dashboard-progress 10s linear forwards;
 }
 
+.startup-dashboard-content {
+  display: grid;
+  gap: clamp(0.7rem, 1.6vw, 1.1rem);
+  justify-items: center;
+}
+
 .startup-dashboard-image {
   position: relative;
   display: grid;
   place-items: center;
   width: fit-content;
-  max-width: min(74rem, 90vw);
-  max-height: min(52rem, 82vh);
+  max-width: min(52rem, 78vw);
+  max-height: min(34rem, 62vh);
   padding: clamp(0.5rem, 1.2vw, 0.9rem);
   border: 1px solid var(--accent-soft);
   border-radius: 8px;
@@ -255,37 +261,40 @@ button:focus-visible,
 .startup-dashboard-image img {
   display: block;
   width: auto;
-  max-width: min(72rem, calc(90vw - 1.8rem));
-  max-height: min(50rem, 80vh);
+  max-width: min(50rem, calc(78vw - 1.8rem));
+  max-height: min(32rem, 60vh);
   object-fit: contain;
   border-radius: 6px;
   box-shadow: 0 16px 46px rgba(0, 0, 0, 0.42);
 }
 
 .startup-dashboard-close {
-  position: fixed;
-  top: clamp(0.75rem, 2vw, 1.35rem);
-  right: clamp(0.75rem, 2vw, 1.35rem);
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
   width: auto;
-  min-width: 4.2rem;
-  height: 2.3rem;
-  padding: 0 0.95rem;
-  border: 1px solid var(--accent-border);
-  border-radius: 6px;
-  background: var(--surface-deep);
-  color: var(--text);
+  min-width: 8.5rem;
+  height: 2.6rem;
+  padding: 0 1.4rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 14.5px;
   font-weight: 800;
-  letter-spacing: 0;
+  letter-spacing: 0.02em;
   box-shadow:
-    0 10px 28px rgba(0, 0, 0, 0.32),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(14px);
+    0 12px 32px var(--accent-border),
+    0 0 0 4px var(--accent-soft);
 }
 
 .startup-dashboard-close:hover {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent-strong);
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  box-shadow:
+    0 14px 36px var(--accent-glow),
+    0 0 0 4px var(--accent-soft);
 }
 
 @keyframes startup-dashboard-progress {
@@ -3267,6 +3276,48 @@ kbd {
 
 .theme-swatch-label {
   font-size: 12.5px;
+}
+
+.font-list {
+  display: grid;
+  gap: 6px;
+}
+
+.font-item-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.font-item {
+  display: grid;
+  gap: 2px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  text-align: left;
+}
+
+.font-item:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.font-item.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-border);
+}
+
+.font-item strong {
+  font-size: 13.5px;
+}
+
+.font-item span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .hotkey-list {

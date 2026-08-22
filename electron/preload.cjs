@@ -30,4 +30,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('project:delete-image-file', { projectPath, relativePath }),
   readImageAsDataUrl: (projectPath, relativePath) =>
     ipcRenderer.invoke('project:read-image-as-data-url', { projectPath, relativePath }),
+  registerFont: () => ipcRenderer.invoke('fonts:register'),
+  readFontAsDataUrl: (fileName) => ipcRenderer.invoke('fonts:read-as-data-url', { fileName }),
+  deleteFont: (fileName) => ipcRenderer.invoke('fonts:delete', { fileName }),
 })

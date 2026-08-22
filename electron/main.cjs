@@ -840,6 +840,91 @@ ipcMain.handle('project:delete-character-folder', async (_event, payload) => {
   }
 })
 
+const FONT_FILE_NAME_PATTERN = /^font-[a-z0-9-]+\.(ttf|otf|woff|woff2)$/i
+
+function getFontsDirectory() {
+  return path.join(app.getPath('userData'), 'fonts')
+}
+
+function fontMimeFromExtension(extension) {
+  switch (extension.toLowerCase()) {
+    case '.otf':
+      return 'font/otf'
+    case '.woff':
+      return 'font/woff'
+    case '.woff2':
+      return 'font/woff2'
+    case '.ttf':
+    default:
+      return 'font/ttf'
+  }
+}
+
+function ensureSafeFontFileName(fileName) {
+  const name = String(fileName || '')
+
+  if (!FONT_FILE_NAME_PATTERN.test(name)) {
+    throw new Error('Invalid font file name.')
+  }
+
+  return name
+}
+
+ipcMain.handle('fonts:register', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '폰트 파일 선택',
+    properties: ['openFile'],
+    filters: [{ name: 'Font Files', extensions: ['ttf', 'otf', 'woff', 'woff2'] }],
+  })
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true }
+  }
+
+  const sourcePath = result.filePaths[0]
+  const extension = path.extname(sourcePath).toLowerCase()
+
+  if (!['.ttf', '.otf', '.woff', '.woff2'].includes(extension)) {
+    throw new Error('Only ttf, otf, woff, and woff2 font files are supported.')
+  }
+
+  const id = `font-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const fileName = `${id}${extension}`
+  const fontsDirectory = getFontsDirectory()
+
+  await fs.mkdir(fontsDirectory, { recursive: true })
+  await fs.copyFile(sourcePath, path.join(fontsDirectory, fileName))
+
+  return {
+    canceled: false,
+    font: {
+      id,
+      fileName,
+      name: path.basename(sourcePath, path.extname(sourcePath)),
+    },
+  }
+})
+
+ipcMain.handle('fonts:read-as-data-url', async (_event, payload) => {
+  const fileName = ensureSafeFontFileName(payload.fileName)
+  const fontPath = path.join(getFontsDirectory(), fileName)
+  const fontBuffer = await fs.readFile(fontPath)
+  const mimeType = fontMimeFromExtension(path.extname(fileName))
+
+  return {
+    dataUrl: `data:${mimeType};base64,${fontBuffer.toString('base64')}`,
+  }
+})
+
+ipcMain.handle('fonts:delete', async (_event, payload) => {
+  const fileName = ensureSafeFontFileName(payload.fileName)
+  const fontPath = path.join(getFontsDirectory(), fileName)
+
+  await fs.rm(fontPath, { force: true })
+
+  return { ok: true }
+})
+
 ipcMain.handle('project:read-image-as-data-url', async (_event, payload) => {
   const projectPath = normalizeProjectPath(payload.projectPath)
   const absolutePath = ensureInsideProject(projectPath, path.join(projectPath, payload.relativePath))

@@ -103,5 +103,11 @@ interface Window {
       projectPath: string,
       relativePath: string,
     ) => Promise<{ dataUrl: string }>
+    registerFont: () => Promise<{
+      canceled: boolean
+      font?: { id: string; fileName: string; name: string }
+    }>
+    readFontAsDataUrl: (fileName: string) => Promise<{ dataUrl: string }>
+    deleteFont: (fileName: string) => Promise<{ ok: boolean }>
   }
 }
