@@ -39,6 +39,11 @@ import type {
 } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import {
+  createEmptyImageGenerationMeta,
+  readImageGenerationMetadata,
+  type ImageGenerationMeta,
+} from './imageMetadata'
 
 type TokenProvider = 'claude' | 'gemini'
 type StatusKind = 'info' | 'success' | 'warning' | 'error'
@@ -53,6 +58,13 @@ interface EmotionSlot {
   updatedAt?: string
 }
 
+interface GenerationMetaField {
+  key: keyof ImageGenerationMeta
+  label: string
+  placeholder: string
+  multiline?: boolean
+}
+
 interface CharacterAssets {
   code: string
   displayName?: string
@@ -62,6 +74,7 @@ interface CharacterAssets {
   profileImagePath?: string
   profileImageName?: string
   profileImagePrompt?: string
+  profileImageMeta?: ImageGenerationMeta
 }
 
 interface CompletionRule {
@@ -227,6 +240,22 @@ const THEME_OPTIONS: ThemeOption[] = [
   { id: 'noir', label: '누아르', preview: ['#0c0c0c', '#e8e2d6'] },
 ]
 
+const GENERATION_META_FIELDS: GenerationMetaField[] = [
+  {
+    key: 'negativePrompt',
+    label: '네거티브 프롬프트',
+    placeholder: '제외할 요소',
+    multiline: true,
+  },
+  { key: 'model', label: '모델', placeholder: '예: NAI Diffusion V4' },
+  { key: 'sampler', label: '샘플러', placeholder: '예: k_euler_ancestral' },
+  { key: 'seed', label: '시드', placeholder: '예: 1234567890' },
+  { key: 'steps', label: '스텝', placeholder: '예: 28' },
+  { key: 'scale', label: '프롬프트 가이던스', placeholder: '예: 5' },
+  { key: 'noiseSchedule', label: '노이즈 스케줄', placeholder: '예: karras' },
+  { key: 'size', label: '이미지 크기', placeholder: '예: 832x1216' },
+]
+
 const HOTKEY_ACTION_LABELS: Array<{ action: HotkeyAction; label: string }> = [
   { action: 'prev-tool', label: '위 서브앱으로 이동' },
   { action: 'next-tool', label: '아래 서브앱으로 이동' },
@@ -346,6 +375,8 @@ const APP_GUIDELINE_SECTIONS = [
       '캐릭터 코드는 프로젝트 폴더 바로 아래에 만들어지는 폴더 이름입니다.',
       '표시 이름은 앱에서 알아보기 위한 이름이며, 실제 폴더명은 캐릭터 코드가 기준입니다.',
       '시트 항목은 캐릭터마다 따로 관리되므로 필요한 항목만 직접 추가하세요.',
+      '프로필 이미지에 NovelAI로 생성한 PNG를 올리면 프롬프트와 생성 정보를 자동으로 읽어 채웁니다.',
+      '이미 입력해 둔 프롬프트가 있으면 덮어쓰기 전에 먼저 확인합니다.',
       '캐릭터 삭제 시 "코드만 제거"와 "폴더까지 삭제"를 선택할 수 있고, 폴더 삭제는 휴지통으로 이동하므로 복구할 수 있습니다.',
     ],
   },
@@ -925,7 +956,27 @@ function normalizeCharacterAssets(input: unknown, fallbackIndex: number): Charac
       typeof maybeCharacter.profileImagePrompt === 'string'
         ? maybeCharacter.profileImagePrompt
         : '',
+    profileImageMeta: normalizeImageGenerationMeta(maybeCharacter.profileImageMeta),
   }
+}
+
+// 예전 데이터에는 생성 정보가 없으므로 빈 값으로 채워 넣는다.
+function normalizeImageGenerationMeta(value: unknown): ImageGenerationMeta {
+  const meta = createEmptyImageGenerationMeta()
+
+  if (!value || typeof value !== 'object') {
+    return meta
+  }
+
+  for (const { key } of GENERATION_META_FIELDS) {
+    const fieldValue = (value as Record<string, unknown>)[key]
+
+    if (typeof fieldValue === 'string') {
+      meta[key] = fieldValue
+    }
+  }
+
+  return meta
 }
 
 function normalizeProfileFields(input: { profileFields?: unknown }) {
@@ -1653,6 +1704,7 @@ function EtomoToolApp() {
   )
   const [activeFontId, setActiveFontId] = useState(initialSnapshot.activeFontId ?? '')
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isGenerationMetaOpen, setIsGenerationMetaOpen] = useState(false)
   const [imagePreviews, setImagePreviews] = useState<Record<string, string>>({})
   const [failedImageKeys, setFailedImageKeys] = useState<Set<string>>(() => new Set())
   const [savingSlotId, setSavingSlotId] = useState<string | null>(null)
@@ -3565,6 +3617,8 @@ function EtomoToolApp() {
         kind: 'success',
         message: `${targetCharacterCode} 캐릭터의 프로필 이미지를 저장했습니다.`,
       })
+
+      await applyImageGenerationMetadata(file, targetCharacterCode)
     } catch {
       setStatus({
         kind: 'error',
@@ -3573,6 +3627,62 @@ function EtomoToolApp() {
     } finally {
       setSavingSlotId(null)
     }
+  }
+
+  // NAI 등으로 생성한 PNG에 들어 있는 프롬프트와 생성 설정을 읽어 입력칸에 채운다.
+  async function applyImageGenerationMetadata(file: File, targetCharacterCode: string) {
+    const parsed = await readImageGenerationMetadata(file)
+
+    if (!parsed) {
+      return
+    }
+
+    const character = chatbot.characters.find(
+      (currentCharacter) => currentCharacter.code === targetCharacterCode,
+    )
+    const existingMeta = normalizeImageGenerationMeta(character?.profileImageMeta)
+    const hasExistingValues =
+      Boolean(character?.profileImagePrompt?.trim()) ||
+      Object.values(existingMeta).some((value) => value.trim())
+
+    // 이미 적어 둔 내용이 있으면 말없이 덮어쓰지 않는다.
+    if (
+      hasExistingValues &&
+      !window.confirm(
+        '이미지에서 생성 정보를 찾았습니다.\n\n' +
+          '적용하면 지금 입력되어 있는 프롬프트와 생성 정보가 덮어써집니다.\n' +
+          '덮어쓰시겠습니까?',
+      )
+    ) {
+      return
+    }
+
+    const filledCount =
+      (parsed.prompt.trim() ? 1 : 0) +
+      Object.values(parsed.meta).filter((value) => value.trim()).length
+
+    updateActiveCharacter((currentCharacter) => ({
+      ...currentCharacter,
+      profileImagePrompt: parsed.prompt || currentCharacter.profileImagePrompt || '',
+      profileImageMeta: parsed.meta,
+    }))
+    setIsGenerationMetaOpen(true)
+    setStatus({
+      kind: 'success',
+      message: `${
+        parsed.source === 'novelai' ? 'NovelAI' : 'Stable Diffusion'
+      } 이미지에서 생성 정보 ${filledCount}개를 불러왔습니다.`,
+    })
+  }
+
+  function updateProfileImageMetaField(key: keyof ImageGenerationMeta, value: string) {
+    updateActiveCharacter((character) => ({
+      ...character,
+      profileImageMeta: {
+        ...normalizeImageGenerationMeta(character.profileImageMeta),
+        [key]: value,
+      },
+    }))
   }
 
   async function deleteProfileImage() {
@@ -5372,6 +5482,12 @@ function EtomoToolApp() {
     const profileImagePreview = activeCharacter?.profileImagePath
       ? imagePreviews[profileImageKey]
       : undefined
+    const activeCharacterGenerationMeta = normalizeImageGenerationMeta(
+      activeCharacter?.profileImageMeta,
+    )
+    const filledGenerationMetaCount = Object.values(activeCharacterGenerationMeta).filter((value) =>
+      value.trim(),
+    ).length
 
     return (
       <div className="profile-sheet-content">
@@ -5476,6 +5592,60 @@ function EtomoToolApp() {
                   프롬프트 복사
                 </button>
               </div>
+            </div>
+
+            <div className="profile-generation-meta">
+              <button
+                aria-expanded={isGenerationMetaOpen}
+                className="profile-generation-toggle"
+                type="button"
+                onClick={() => setIsGenerationMetaOpen((isOpen) => !isOpen)}
+                title="생성 정보 펼치기/접기"
+              >
+                <ChevronDown size={14} aria-hidden="true" />
+                <span>생성 정보</span>
+                <em>
+                  {filledGenerationMetaCount > 0
+                    ? `${filledGenerationMetaCount}개 입력됨`
+                    : 'NAI 이미지를 올리면 자동 입력'}
+                </em>
+              </button>
+
+              {isGenerationMetaOpen && (
+                <div className="profile-generation-fields">
+                  {GENERATION_META_FIELDS.map((field) => (
+                    <label
+                      className={
+                        field.multiline
+                          ? 'profile-generation-field wide'
+                          : 'profile-generation-field'
+                      }
+                      key={field.key}
+                    >
+                      <span>{field.label}</span>
+                      {field.multiline ? (
+                        <textarea
+                          aria-label={field.label}
+                          placeholder={field.placeholder}
+                          value={activeCharacterGenerationMeta[field.key]}
+                          onChange={(event) =>
+                            updateProfileImageMetaField(field.key, event.currentTarget.value)
+                          }
+                        />
+                      ) : (
+                        <input
+                          aria-label={field.label}
+                          placeholder={field.placeholder}
+                          value={activeCharacterGenerationMeta[field.key]}
+                          onChange={(event) =>
+                            updateProfileImageMetaField(field.key, event.currentTarget.value)
+                          }
+                        />
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

@@ -3437,6 +3437,7 @@ kbd {
 .profile-visual-panel {
   display: grid;
   grid-template-columns: var(--profile-image-size) minmax(0, 1fr);
+  grid-template-rows: auto auto;
   gap: clamp(10px, 1vw, 14px);
   min-width: 0;
   padding: clamp(10px, 1.2vh, 14px);
@@ -3536,6 +3537,95 @@ kbd {
   font-size: 12px;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* 생성 정보 블록은 이미지와 프롬프트 아래에 가로 전체로 놓인다. */
+.profile-generation-meta {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.profile-generation-toggle {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-align: left;
+}
+
+.profile-generation-toggle:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.profile-generation-toggle svg {
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.profile-generation-toggle[aria-expanded='false'] svg {
+  transform: rotate(-90deg);
+}
+
+.profile-generation-toggle em {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 700;
+  text-align: right;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.profile-generation-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  /* 항목이 많아도 시트 표를 잠식하지 않도록 높이를 제한하고 안에서 스크롤한다. */
+  max-height: clamp(120px, 24vh, 280px);
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-color: var(--accent-border) var(--surface-deep);
+  scrollbar-width: thin;
+}
+
+.profile-generation-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.profile-generation-field.wide {
+  grid-column: 1 / -1;
+}
+
+.profile-generation-field span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.profile-generation-field input,
+.profile-generation-field textarea {
+  background: var(--input-bg);
+  font-size: 0.78rem;
+}
+
+.profile-generation-field textarea {
+  min-height: 58px;
+  resize: vertical;
 }
 
 /* ------------------------------------------------------------------ */
