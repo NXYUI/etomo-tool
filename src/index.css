@@ -983,7 +983,9 @@ button:focus-visible,
 
 .profile-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  /* 유일한 자식(.profile-sheet-content)이 패널 높이를 정확히 채우게 해,
+     시트 표가 패널 밖으로 자라는 대신 자체 스크롤되도록 한다. */
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .overview-panel {
@@ -2812,12 +2814,28 @@ kbd {
   overflow: hidden;
 }
 
+/* 자식 개수에 따라 행이 어긋나지 않도록 flex 컬럼으로 배치한다.
+   (grid 행을 고정하면 요소가 추가될 때 특정 행이 0으로 붕괴해
+   그 내용물이 아래 요소를 덮는 문제가 생긴다.) */
 .profile-sheet-content {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   min-height: 0;
   overflow: hidden;
+}
+
+/* 제목과 이미지 패널은 자기 크기만큼만 차지한다. */
+.profile-sheet-content > .section-heading,
+.profile-sheet-content > .profile-visual-panel {
+  flex: 0 0 auto;
+}
+
+/* 시트 표(또는 빈 상태)가 남은 공간을 채우고 스스로 스크롤한다. */
+.profile-sheet-content > .profile-table-wrap,
+.profile-sheet-content > .empty-tool-state {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .profile-side-stack {
@@ -3418,20 +3436,23 @@ kbd {
 
 .profile-visual-panel {
   display: grid;
-  grid-template-columns: 190px 1fr;
-  gap: 14px;
-  padding: 14px;
+  grid-template-columns: var(--profile-image-size) minmax(0, 1fr);
+  gap: clamp(10px, 1vw, 14px);
+  min-width: 0;
+  padding: clamp(10px, 1.2vh, 14px);
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel-soft);
+  /* 이미지 박스 한 변의 길이. 창 높이에 비례해 줄어든다. */
+  --profile-image-size: clamp(112px, 17vh, 190px);
 }
 
 .profile-image-box {
   position: relative;
   display: grid;
   place-items: center;
-  width: 190px;
-  height: 190px;
+  width: var(--profile-image-size);
+  height: var(--profile-image-size);
   overflow: hidden;
   border: 1px dashed var(--border-strong);
   border-radius: 10px;
@@ -3443,6 +3464,10 @@ kbd {
 }
 
 .profile-image-box img {
+  /* 절대 배치로 박스를 정확히 채운다. 일반 흐름에 두면 세로로 긴 이미지가
+     자동 크기 행을 밀어내 박스 밖으로 넘친다. */
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -3473,14 +3498,17 @@ kbd {
 
 .profile-image-side {
   display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 8px;
-  align-content: start;
   min-width: 0;
+  min-height: 0;
 }
 
 .profile-image-prompt-field {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 6px;
+  min-height: 0;
 }
 
 .profile-image-prompt-field span {
@@ -3489,7 +3517,9 @@ kbd {
 }
 
 .profile-image-prompt-field textarea {
-  min-height: 128px;
+  min-height: 0;
+  height: 100%;
+  resize: none;
   background: var(--input-bg);
 }
 
